@@ -28,6 +28,8 @@ from pathlib import Path
 
 from dotenv import dotenv_values
 
+from daily_caps import take
+
 _ROOT = Path(__file__).resolve().parent.parent
 
 CANVA = frozenset({"CANVA_CLIENT_ID", "CANVA_CLIENT_SECRET", "CANVA_ACCESS_TOKEN",
@@ -75,6 +77,14 @@ AGENT_SECRETS: dict[str, frozenset[str]] = {
 }
 
 
+# Scripts that call the model; each start counts toward MAX_MODEL_RUNS_PER_DAY.
+MODEL_SCRIPTS = frozenset(name for name, keys in AGENT_SECRETS.items()
+                          if "ANTHROPIC_API_KEY" in keys and keys != SECRET_KEYS)
+
+# Exit code loop.sh and preflight use for "temporary, try again later"
+EX_TEMPFAIL = 75
+
+
 def scoping_enabled(environ: dict[str, str], dotenv: dict[str, str | None]) -> bool:
     raw = environ.get("AGENT_ENV_SCOPING") or dotenv.get("AGENT_ENV_SCOPING") or ""
     return raw.strip().lower() in ("1", "true", "yes", "on")
@@ -99,6 +109,10 @@ def main(argv: list[str]) -> None:
         print("Usage: python scripts/scoped_env.py scripts/<name>.py [args...]", file=sys.stderr)
         sys.exit(2)
     script, args = argv[0], argv[1:]
+    if Path(script).name in MODEL_SCRIPTS and not take("model_run"):
+        print(f"[scoped_env] Daily model-run cap reached; not starting {script}. "
+              "It resets at midnight UTC (MAX_MODEL_RUNS_PER_DAY).", file=sys.stderr)
+        sys.exit(EX_TEMPFAIL)
     env = dict(os.environ)
     if scoping_enabled(env, dotenv_values(_ROOT / ".env")):
         if Path(script).name not in AGENT_SECRETS:

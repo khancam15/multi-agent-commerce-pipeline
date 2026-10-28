@@ -69,3 +69,13 @@ def test_wrapper_changes_nothing_when_off(tmp_path: Path) -> None:
     out = subprocess.run([sys.executable, str(SCRIPTS_DIR / "scoped_env.py"), str(probe)],
                          env=env, capture_output=True, text=True, check=True).stdout
     assert out.strip() == "'value-of-STRIPE_SECRET_KEY'"
+
+
+def test_model_script_past_the_daily_cap_exits_75_without_running(tmp_path: Path) -> None:
+    probe = tmp_path / "brand_crew.py"
+    probe.write_text("print('ran')\n")
+    env = {"PATH": "/usr/bin:/bin", "MAX_MODEL_RUNS_PER_DAY": "0"}
+    result = subprocess.run([sys.executable, str(SCRIPTS_DIR / "scoped_env.py"), str(probe)],
+                            env=env, capture_output=True, text=True)
+    assert result.returncode == 75
+    assert "ran" not in result.stdout

@@ -32,10 +32,11 @@ ENV_PATH = _ROOT / ".env"
 
 sys.path.insert(0, str(Path(__file__).parent))
 from api_retry import rget, rpost
+from shopify_common import api_version
 
 CANVA_ME_URL   = "https://api.canva.com/rest/v1/users/me"
 CANVA_TOKEN_URL = "https://api.canva.com/rest/v1/oauth/token"
-SHOPIFY_API_VERSION = "2024-01"
+SHOPIFY_API_VERSION = api_version()
 
 
 # ── .env helpers ──────────────────────────────────────────────────────────────
@@ -202,6 +203,16 @@ def run_preflight() -> bool:
     return True
 
 
+# Exit codes: 0 passed, 1 credentials invalid (needs a person),
+# 75 network error (temporary — safe to retry later)
+EXIT_TEMPFAIL = 75
+
 if __name__ == "__main__":
-    ok = run_preflight()
+    import requests
+
+    try:
+        ok = run_preflight()
+    except requests.RequestException as exc:
+        print(f"[preflight] Network error — could not reach an API: {exc}")
+        sys.exit(EXIT_TEMPFAIL)
     sys.exit(0 if ok else 1)

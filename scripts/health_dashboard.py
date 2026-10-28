@@ -3,7 +3,7 @@ health_dashboard.py  —  Phase 7
 ──────────────────────────────────
 Daily summary and health check. Queries SQLite and prints a structured
 report: listings published this week, failure rate, average run duration,
-and any queue rows stuck in 'designed' status for over 48 hours.
+and any queue rows pending for over 48 hours or marked failed.
 
 Run:
     python scripts/health_dashboard.py
@@ -13,7 +13,7 @@ Output is plain text — n8n captures stdout and sends via notification node.
 
 Execution flow (per v3 Phase 7 spec):
   7.5  Query run_log: listings published this week, failure rate, counts
-  7.6  Flag queue rows stuck in 'designed' status for > 48 hours
+  7.6  Flag queue rows pending for > 48 hours or marked failed
   7.7  Print structured summary for n8n notification
 """
 
@@ -22,7 +22,7 @@ from __future__ import annotations
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from db import get_conn, get_sales_summary, DB_PATH
+from db import get_conn, get_sales_summary, init_db, DB_PATH
 
 # Type annotation for get_sales_summary
 
@@ -42,6 +42,7 @@ def generate_report() -> str:
     Queries SQLite for weekly stats and stuck-queue items.
     Returns a formatted plain-text report string.
     """
+    init_db()  # adds any new tables/columns to an older database
     week_start = _week_start()
     lines: list[str] = []
 
@@ -70,11 +71,21 @@ def generate_report() -> str:
             (week_start,),
         ).fetchall()
 
-        # Stuck queue items (designed for > 48 hours)
+        # Stuck queue items (pending for > 48 hours, or given up after repeated failures)
         cutoff = (datetime.utcnow() - timedelta(hours=STUCK_THRESHOLD_HOURS)).isoformat()
         stuck = conn.execute(
-            "SELECT id, product_name, updated_at FROM queue WHERE status = 'designed' AND updated_at < ?",
+            """SELECT id, product_name, status, updated_at FROM queue
+               WHERE (status = 'pending' AND created_at < ?) OR status = 'failed'
+               ORDER BY updated_at""",
             (cutoff,),
+        ).fetchall()
+
+        # Drafts waiting for review, and buyers whose template email failed
+        drafts = conn.execute(
+            "SELECT product_name FROM listings WHERE status = 'draft'"
+        ).fetchall()
+        undelivered = conn.execute(
+            "SELECT order_name, product_name, status FROM deliveries WHERE status != 'sent'"
         ).fetchall()
 
         # Total published all time
@@ -91,7 +102,7 @@ def generate_report() -> str:
     lines.append("=" * 50)
     lines.append("")
     lines.append("  ── Revenue (last 7 days) ──────────────────")
-    lines.append(f"  Net revenue:          ${sales['total_revenue']:.2f}")
+    lines.append(f"  Net revenue (est.):   ${sales['total_revenue']:.2f}")
     lines.append(f"  Gross revenue:        ${sales['gross_revenue']:.2f}")
     lines.append(f"  Orders:               {sales['order_count']}")
     lines.append(f"  Units sold:           {sales['units_sold']}")
@@ -112,10 +123,22 @@ def generate_report() -> str:
             lines.append(f"    [{row['run_at'][:16]}] {row['product_name']} / {row['phase']}: {row['message'][:80]}")
         lines.append("")
 
+    if drafts:
+        lines.append(f"  Drafts waiting for review ({len(drafts)}) — ./run.sh approve <product>:")
+        for row in drafts:
+            lines.append(f"    {row['product_name']}")
+        lines.append("")
+
+    if undelivered:
+        lines.append(f"  ⚠ Buyers not yet sent their template ({len(undelivered)}):")
+        for row in undelivered:
+            lines.append(f"    {row['order_name']}: {row['product_name']} ({row['status']})")
+        lines.append("")
+
     if stuck:
-        lines.append(f"  ⚠ Stuck in 'designed' > {STUCK_THRESHOLD_HOURS}h:")
+        lines.append(f"  ⚠ Stuck queue items (pending > {STUCK_THRESHOLD_HOURS}h or failed):")
         for row in stuck:
-            lines.append(f"    ID {row['id']}: {row['product_name']} (since {row['updated_at'][:16]})")
+            lines.append(f"    ID {row['id']}: {row['product_name']} — {row['status']} (since {row['updated_at'][:16]})")
         lines.append("")
     else:
         lines.append("  Queue: no stuck items")

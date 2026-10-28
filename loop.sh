@@ -20,6 +20,9 @@
 # Phases 1 & 2 each run at most once every 7 days (content & brand refresh cadence).
 # Phase 3 runs every cycle in build/design mode — designs one new product per hour.
 # Phase 5 is gated by WEEKLY_PUBLISH_LIMIT (default 5) and PUBLISH_COOLDOWN_HOURS (default 24).
+# Template delivery to buyers (order_delivery.py) runs every cycle in every mode.
+# A product that fails Phase 3B–5 is retried with lower priority and marked
+# failed after 3 attempts, so it never blocks the rest of the queue.
 #
 # Configure in .env:
 #   WEEKLY_PUBLISH_LIMIT=5        max listings per Mon–Sun week
@@ -42,46 +45,64 @@ set -uo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR"
 
-# Load .env so WEEKLY_PUBLISH_LIMIT and PUBLISH_COOLDOWN_HOURS are available
-if [[ -f "$SCRIPT_DIR/.env" ]]; then
-    set -o allexport
-    source "$SCRIPT_DIR/.env"
-    set +o allexport
-fi
-
 PYTHON="$SCRIPT_DIR/.venv/bin/python"
+
+# Exit code for configuration errors. The systemd unit does not restart on it,
+# so a broken credential stops the service instead of retrying every 30s.
+EX_CONFIG=78
 LOG_DIR="$SCRIPT_DIR/logs"
 LOG_FILE="$LOG_DIR/loop.log"
 ERR_FILE="$LOG_DIR/loop_errors.log"
 PID_FILE="$LOG_DIR/loop.pid"
 SLEEP="${SLEEP:-3600}"
+# Buyers wait at most this long for their template email while the loop sleeps
+DELIVERY_INTERVAL="${DELIVERY_INTERVAL:-600}"
 RUN_ONCE="${1:-}"
-
-# Publishing pacing — configurable via .env
-WEEKLY_LIMIT="${WEEKLY_PUBLISH_LIMIT:-5}"
-COOLDOWN_HOURS="${PUBLISH_COOLDOWN_HOURS:-24}"
 
 # ── Guards ────────────────────────────────────────────────────────────────────
 mkdir -p "$LOG_DIR"
 
 if [[ ! -x "$PYTHON" ]]; then
     echo "[loop] ERROR: .venv not found. Run: ./setup_vps.sh" >&2
-    exit 1
+    exit "$EX_CONFIG"
 fi
 
 if [[ ! -f "$SCRIPT_DIR/.env" ]]; then
     echo "[loop] ERROR: .env not found. Copy .env.example and fill in API keys." >&2
-    exit 1
+    exit "$EX_CONFIG"
 fi
+
+# Read a value from .env with python-dotenv. .env is never sourced as shell:
+# values with spaces (BRAND_NAME, Gmail app passwords) break `source`, and a
+# value containing $(...) would run as a command.
+_env_get() {
+    "$PYTHON" -c 'import sys
+from dotenv import dotenv_values
+print(dotenv_values(".env").get(sys.argv[1]) or sys.argv[2])' "$1" "$2"
+}
+
+# Publishing pacing — configurable via .env (environment variables win)
+WEEKLY_LIMIT="${WEEKLY_PUBLISH_LIMIT:-$(_env_get WEEKLY_PUBLISH_LIMIT 5)}"
+COOLDOWN_HOURS="${PUBLISH_COOLDOWN_HOURS:-$(_env_get PUBLISH_COOLDOWN_HOURS 24)}"
+[[ "$WEEKLY_LIMIT" =~ ^[0-9]+$ ]] || { echo "[loop] ERROR: WEEKLY_PUBLISH_LIMIT must be a whole number" >&2; exit "$EX_CONFIG"; }
+[[ "$COOLDOWN_HOURS" =~ ^[0-9]+([.][0-9]+)?$ ]] || { echo "[loop] ERROR: PUBLISH_COOLDOWN_HOURS must be a number" >&2; exit "$EX_CONFIG"; }
 
 echo $$ > "$PID_FILE"
 
 # ── Pre-flight credential check ───────────────────────────────────────────────
 # Validates Shopify, Canva, and Anthropic credentials before doing any real work.
 # Exits the loop immediately if Shopify credentials are broken (non-recoverable).
-if ! "$PYTHON" scripts/preflight.py; then
+PREFLIGHT_CODE=0
+"$PYTHON" scripts/preflight.py || PREFLIGHT_CODE=$?
+if [[ $PREFLIGHT_CODE -eq 75 ]]; then
+    echo "[loop] Pre-flight could not reach the APIs (network) — exiting so systemd retries later." >&2
+    exit 75
+fi
+if [[ $PREFLIGHT_CODE -ne 0 ]]; then
     echo "[loop] Pre-flight failed — fix credentials and restart. Exiting." >&2
-    exit 1
+    "$PYTHON" scripts/alerts.py send "Pre-flight failed — loop stopped" \
+        "Fix the credentials reported in logs/loop.log, then: systemctl restart shopify-pipeline"
+    exit "$EX_CONFIG"
 fi
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -100,26 +121,61 @@ _err() {
     echo "$msg" >> "$ERR_FILE"
 }
 
+# Sleep for $1 seconds, waking every DELIVERY_INTERVAL to deliver new orders
+_sleep_with_delivery() {
+    local remaining="$1" chunk
+    while (( remaining > 0 )); do
+        chunk=$(( remaining < DELIVERY_INTERVAL ? remaining : DELIVERY_INTERVAL ))
+        sleep "$chunk"
+        remaining=$(( remaining - chunk ))
+        if (( remaining > 0 )); then
+            _run_phase "Order delivery" "$PYTHON" scripts/order_delivery.py \
+                || _err "Order delivery had failures — will retry."
+        fi
+    done
+}
+
 _sleep_or_exit() {
     if [[ "$RUN_ONCE" == "--once" ]]; then
         _log "Run-once mode — exiting."
         exit 0
     fi
-    _log "Sleeping ${SLEEP}s until next cycle..."
-    sleep "$SLEEP"
+    _log "Sleeping ${SLEEP}s until next cycle (delivering orders every ${DELIVERY_INTERVAL}s)..."
+    _sleep_with_delivery "$SLEEP"
 }
 
 _run_phase() {
     local label="$1"
     shift
     _log "Starting $label: $*"
-    if "$@" >> "$LOG_FILE" 2>&1; then
+    local code=0
+    "$@" >> "$LOG_FILE" 2>&1 || code=$?
+    if [[ $code -eq 0 ]]; then
         _log "$label completed OK"
+        "$PYTHON" scripts/alerts.py ok "$label" >> "$LOG_FILE" 2>&1 || true
         return 0
-    else
-        local code=$?
-        _err "$label FAILED (exit $code)"
-        return $code
+    fi
+    _err "$label FAILED (exit $code)"
+    "$PYTHON" scripts/alerts.py fail "$label" "Exit $code. Last log lines:
+$(tail -n 20 "$LOG_FILE")" >> "$LOG_FILE" 2>&1 || true
+    return $code
+}
+
+# Count a failed publish attempt; after 3 the product is marked failed
+_queue_failure() {
+    local product="$1" reason="$2"
+    local status
+    status=$("$PYTHON" - "$product" "$reason" 2>>"$LOG_FILE" <<'PYEOF'
+import sys; sys.path.insert(0, 'scripts')
+from db import record_queue_failure
+print(record_queue_failure(sys.argv[1], sys.argv[2]))
+PYEOF
+)
+    if [[ "$status" == "failed" ]]; then
+        _err "Product '$product' failed 3 times — marked failed and skipped. See run_log for details."
+        "$PYTHON" scripts/alerts.py send "Product skipped: $product" \
+            "It failed 3 publish attempts ($reason). Fix the cause, then set its queue row back to pending." \
+            >> "$LOG_FILE" 2>&1 || true
     fi
 }
 
@@ -163,8 +219,14 @@ while true; do
             || _err "Sales sync failed — non-fatal."
         _run_phase "Email digest" "$PYTHON" scripts/email_digest.py \
             || _err "Email digest failed — non-fatal."
+        _run_phase "Database backup" "$PYTHON" scripts/backup_db.py \
+            || _err "Database backup failed — non-fatal."
         LAST_DIGEST_DATE="$TODAY"
     fi
+
+    # ── Every cycle: send template links to buyers of new paid orders ─────────
+    _run_phase "Order delivery" "$PYTHON" scripts/order_delivery.py \
+        || _err "Order delivery had failures — will retry next cycle."
 
     # ── Check weekly publish budget ───────────────────────────────────────────
     PUBLISHED_THIS_WEEK=$("$PYTHON" - 2>>"$LOG_FILE" <<'PYEOF'
@@ -173,6 +235,11 @@ from db import count_published_this_week
 print(count_published_this_week())
 PYEOF
 )
+    if [[ ! "$PUBLISHED_THIS_WEEK" =~ ^[0-9]+$ ]]; then
+        _err "Could not read the weekly publish count from the database — skipping this cycle."
+        _sleep_or_exit
+        continue
+    fi
     _log "Weekly budget: ${PUBLISHED_THIS_WEEK}/${WEEKLY_LIMIT} listings published this week"
 
     # ── MAINTAIN MODE — weekly limit reached ─────────────────────────────────
@@ -232,7 +299,7 @@ PYEOF
             _log "Run-once mode — exiting."
             exit 0
         fi
-        sleep "$SECS_TO_RESET"
+        _sleep_with_delivery "$SECS_TO_RESET"
         continue
     fi
 
@@ -267,6 +334,9 @@ if not master.exists():
 text  = master.read_text(encoding='utf-8')
 names = re.findall(r'^\d+\.\s+(.+?)\s+\(\$[\d.]+\)', text, re.MULTILINE)
 for name in names:
+    # Names come from model output and become folder names — never allow a path
+    if '/' in name or '\\' in name or '..' in name:
+        continue
     if not (outputs / f'{name.replace(" ", "_")}_canva.json').exists():
         print(name)
         break
@@ -286,7 +356,7 @@ PYEOF
             _log "Phase 3B — creating digital product template: $DESIGN_PRODUCT"
             _run_phase "Phase 3B (canva product creator)" \
                 "$PYTHON" scripts/canva_product_creator.py "$DESIGN_PRODUCT" \
-                || _err "Phase 3B failed for: $DESIGN_PRODUCT — non-fatal, listing will go live without attached template file."
+                || _err "Phase 3B failed for: $DESIGN_PRODUCT — will retry before publishing; it will not publish without a template link."
         else
             _log "Phase 3B skipped — product template already exists for: $DESIGN_PRODUCT"
         fi
@@ -317,9 +387,8 @@ PYEOF
     # ── BUILD MODE — cooldown cleared, publish next pending product ───────────
     PRODUCT=$("$PYTHON" - 2>>"$LOG_FILE" <<'PYEOF'
 import sys; sys.path.insert(0, 'scripts')
-from db import get_queue_items
-rows = get_queue_items('pending')
-print(rows[0]['product_name'] if rows else '')
+from db import next_publishable_product
+print(next_publishable_product())
 PYEOF
 )
 
@@ -331,22 +400,29 @@ PYEOF
 
     _log "━━━ BUILD MODE — publishing: $PRODUCT ━━━"
 
+    # Phase 3B retry: a product needs a template link before it can be sold
+    if [[ ! -f "$SCRIPT_DIR/outputs/${PRODUCT// /_}_product.json" ]]; then
+        _run_phase "Phase 3B retry (canva product creator)" \
+            "$PYTHON" scripts/canva_product_creator.py "$PRODUCT" \
+            || { _queue_failure "$PRODUCT" "phase 3B: no template link"; _log "Cycle $CYCLE aborted at phase 3B."; _sleep_or_exit; continue; }
+    fi
+
     # Phase 4: Process + Stage
     _run_phase "Phase 4.1 (image processor)"  "$PYTHON" scripts/image_processor.py      "$PRODUCT" \
-        || { _log "Cycle $CYCLE aborted at phase 4.1."; _sleep_or_exit; continue; }
+        || { _queue_failure "$PRODUCT" "phase 4.1"; _log "Cycle $CYCLE aborted at phase 4.1."; _sleep_or_exit; continue; }
 
     _run_phase "Phase 4.2 (listing builder)"  "$PYTHON" scripts/listing_builder.py      "$PRODUCT" \
-        || { _log "Cycle $CYCLE aborted at phase 4.2."; _sleep_or_exit; continue; }
+        || { _queue_failure "$PRODUCT" "phase 4.2"; _log "Cycle $CYCLE aborted at phase 4.2."; _sleep_or_exit; continue; }
 
     _run_phase "Phase 4.3 (validator)"        "$PYTHON" scripts/pre_upload_validator.py  "$PRODUCT" \
-        || { _log "Cycle $CYCLE aborted at phase 4.3 — validation failed."; _sleep_or_exit; continue; }
+        || { _queue_failure "$PRODUCT" "phase 4.3 validation"; _log "Cycle $CYCLE aborted at phase 4.3 — validation failed."; _sleep_or_exit; continue; }
 
     _run_phase "Phase 4.5 (file organizer)"   "$PYTHON" scripts/file_organizer.py       "$PRODUCT" \
-        || { _log "Cycle $CYCLE aborted at phase 4.5."; _sleep_or_exit; continue; }
+        || { _queue_failure "$PRODUCT" "phase 4.5"; _log "Cycle $CYCLE aborted at phase 4.5."; _sleep_or_exit; continue; }
 
-    # Phase 5: Publish to Shopify via Admin API
+    # Phase 5: Publish to Shopify via Admin API (draft unless SHOPIFY_PUBLISH_STATUS=active)
     _run_phase "Phase 5 (shopify uploader)"   "$PYTHON" scripts/shopify_uploader.py     "$PRODUCT" \
-        || { _log "Cycle $CYCLE aborted at phase 5."; _sleep_or_exit; continue; }
+        || { _queue_failure "$PRODUCT" "phase 5 upload"; _log "Cycle $CYCLE aborted at phase 5."; _sleep_or_exit; continue; }
 
     # Phase 6: SEO analysis on the new listing (non-fatal)
     _run_phase "Phase 6 (seo analyzer)"       "$PYTHON" scripts/seo_analyzer.py         "$PRODUCT" \
@@ -356,7 +432,7 @@ PYEOF
     _run_phase "Phase 7 (health dashboard)"   "$PYTHON" scripts/health_dashboard.py \
         || _err "Phase 7 failed — non-fatal."
 
-    _log "──────── CYCLE $CYCLE COMPLETE — published: $PRODUCT (${PUBLISHED_THIS_WEEK+1}/${WEEKLY_LIMIT} this week) ────────"
+    _log "──────── CYCLE $CYCLE COMPLETE — published: $PRODUCT ($((PUBLISHED_THIS_WEEK + 1))/${WEEKLY_LIMIT} this week) ────────"
 
     _sleep_or_exit
 done

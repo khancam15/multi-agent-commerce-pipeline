@@ -50,6 +50,7 @@ from rich.panel import Panel
 from rich import print as rprint
 
 from common import (
+    brand_guide_changed,
     call_with_retry,
     extract_checklist,
     load_brand_guide,
@@ -67,7 +68,7 @@ if not _ANTHROPIC_API_KEY:
     raise SystemExit("[error] ANTHROPIC_API_KEY is not set. Add it to your .env file.")
 client  = anthropic.Anthropic(api_key=_ANTHROPIC_API_KEY)
 
-MODEL               = "claude-haiku-4-5"
+MODEL               = os.getenv("PHASE2_MODEL", "claude-haiku-4-5")
 _ROOT               = Path(__file__).resolve().parent.parent
 BRAND_FILES         = (_ROOT / "outputs" / "brand_guide.md", _ROOT / "brand_guide.md")
 STATE_FILE          = _ROOT / "outputs" / "executor_state.json"
@@ -186,8 +187,13 @@ def main() -> None:
     ))
 
     guide = load_brand_guide(BRAND_FILES)
+    brand_file  = next(f for f in BRAND_FILES if f.exists())
+    brand_mtime = brand_file.stat().st_mtime
 
     loaded = load_state(STATE_FILE)
+    if loaded is not None and brand_guide_changed(loaded, brand_mtime):
+        console.print("[yellow]Brand guide was regenerated — starting a fresh run.[/yellow]")
+        loaded = None
     state: dict[str, Any]
     if loaded is not None:
         state = loaded
@@ -196,7 +202,11 @@ def main() -> None:
             initialize_master_prompt_file()
     else:
         checklist = extract_checklist(guide)
-        state = {"started_at": datetime.now().isoformat(), "checklist": checklist}
+        state = {
+            "started_at": datetime.now().isoformat(),
+            "brand_guide_mtime": brand_mtime,
+            "checklist": checklist,
+        }
         save_state(STATE_FILE, state)
         initialize_master_prompt_file()
         console.print("[green]New execution started.[/green]")

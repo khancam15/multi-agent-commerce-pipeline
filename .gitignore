@@ -43,3 +43,5 @@ history_list.txt
 scripts/__pycache__/
 executor_state.json
 history_list.txt
+# Local database backups (copy off the server; never commit)
+backups/

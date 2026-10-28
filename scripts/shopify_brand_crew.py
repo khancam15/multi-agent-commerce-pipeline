@@ -84,7 +84,7 @@ _require_env("SERPER_API_KEY")
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-MODEL = "claude-haiku-4-5"   # fastest / most cost-efficient for agentic loops
+MODEL = os.getenv("PHASE1_MODEL", "claude-haiku-4-5")   # fast and cost-efficient for agentic loops
 
 # ─── TOOLS ───────────────────────────────────────────────────────────────────
 # SerperDevTool fires a real Google/Shopify search on every agent tool call.
@@ -297,7 +297,7 @@ task_strategy = Task(
 )
 
 task_visual = Task(
-    description=f"""
+    description="""
     Design the complete visual identity system for the Shopify store defined
     in the brand strategy document.
 
@@ -326,7 +326,7 @@ task_visual = Task(
 )
 
 task_copy = Task(
-    description=f"""
+    description="""
     Write the complete brand voice and SEO system for the Shopify store.
 
     Deliver:
@@ -353,7 +353,7 @@ task_copy = Task(
 )
 
 task_launch = Task(
-    description=f"""
+    description="""
     Compile all previous deliverables — market research, brand strategy,
     visual identity, and copy system — into a single complete brand guide.
 
@@ -414,8 +414,8 @@ brand_crew = Crew(
 
 if __name__ == "__main__":
     print(f"\n{'─'*60}")
-    print(f"  Shopify Brand Builder Crew")
-    print(f"  Niche: AI-selected by Niche Scout agent")
+    print("  Shopify Brand Builder Crew")
+    print("  Niche: AI-selected by Niche Scout agent")
     print(f"{'─'*60}\n")
 
     try:

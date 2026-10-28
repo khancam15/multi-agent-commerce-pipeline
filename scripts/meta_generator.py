@@ -92,7 +92,7 @@ def generate(product_name: str, price: float) -> Path:
         description = dm.group(1).strip()[:2000]
     if not description:
         description = (
-            f"Instant download: professionally designed {product_name}. "
+            f"Digital product: professionally designed {product_name}. "
             "Fully editable in Canva. No design skills required. "
             "Perfect for freelancers and creators."
         )

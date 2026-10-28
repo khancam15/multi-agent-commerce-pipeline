@@ -75,7 +75,7 @@ BRAND_GUIDE  = OUTPUTS_DIR / "brand_guide.md"
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 CANVA_MCP_URL = "https://mcp.canva.com/mcp"
-MODEL         = "claude-opus-4-5"
+MODEL         = os.getenv("CANVA_MODEL", "claude-opus-4-5")
 
 
 class SlotSpec(TypedDict):
@@ -96,21 +96,22 @@ SLOTS: list[SlotSpec] = [
         "slot": 1,
         "role": "Before/After split hero",
         "desc": (
-            "Split-screen layout. LEFT SIDE labelled 'BEFORE': creator without the template — "
-            "messy portfolio, ignored pitches, zero brand deals. RIGHT SIDE labelled 'AFTER': "
-            "same creator WITH the template — polished, professional, landing brand deals. "
+            "Split-screen layout. LEFT SIDE labelled 'BEFORE': a plain, unformatted document. "
+            "RIGHT SIDE labelled 'AFTER': the same content laid out in the template — "
+            "polished and professional. "
             "Bold 'BEFORE → AFTER' label spanning the centre split. Large headline across the top: "
-            "'[PRODUCT] — The Template That Gets You Hired'. "
-            "This is the highest CTR format used by 30% of top Shopify sellers."
+            "'[PRODUCT] — Look Professional in Minutes'. "
+            "Show the design change only; do not promise results such as deals, jobs or income."
         ),
     },
     {
         "slot": 2,
         "role": "Features + price anchor",
         "desc": (
-            "Clean feature list layout. 4–5 checkmark bullet points, each leading with the "
-            "OUTCOME: '✓ Land your first brand deal this week', "
-            "'✓ Professional pitch ready in 5 minutes', '✓ Stand out from thousands of creators'. "
+            "Clean feature list layout. 4–5 checkmark bullet points, each naming a real feature "
+            "or benefit of the product: '✓ Fully editable in Canva', "
+            "'✓ Professional layout ready to fill in', '✓ Works on desktop and mobile'. "
+            "Do not promise outcomes such as landing deals, clients or income. "
             "Bold price anchor at the bottom: "
             "'Hiring a designer: $200+  |  Yours today: $[PRICE]'. "
             "Premium minimal look with generous white space."
@@ -132,18 +133,17 @@ SLOTS: list[SlotSpec] = [
         "role": "How it works — 3 steps",
         "desc": (
             "Three numbered steps with simple icons: "
-            "1️⃣ Download instantly after purchase  "
-            "2️⃣ Add your name, photos, and rates in Canva (5 min)  "
-            "3️⃣ Pitch brands and land deals. "
-            "Bold time promise below the steps: 'Ready to pitch in 30 minutes'. "
-            "Time-specific language removes hesitation for undecided buyers."
+            "1️⃣ Get your Canva link by email after purchase  "
+            "2️⃣ Add your name, photos, and details in Canva  "
+            "3️⃣ Download or share your finished design. "
+            "Short line below the steps: 'Edit in minutes, no design skills needed'."
         ),
     },
     {
         "slot": 5,
         "role": "Trust badges + product facts",
         "desc": (
-            "Badge row: 'Beginner Friendly' | 'Instant Download' | 'Canva Compatible' | "
+            "Badge row: 'Beginner Friendly' | 'Delivered by Email' | 'Canva Compatible' | "
             "'5-Min Setup'. "
             "Below it, three short factual benefits drawn from the product listing. "
             "Do not invent testimonials, quotes, reviews, star ratings, or customer results."
@@ -527,7 +527,7 @@ def generate_images(product_name: str, price: float | None = None) -> int:
       4. Insert product into queue
     Returns 0 on success, 1 on failure.
     """
-    print(f"\n  [3] ── Canva Image Generator ──────────────────────────")
+    print("\n  [3] ── Canva Image Generator ──────────────────────────")
     print(f"  [3] Product: {product_name}")
 
     # Resolve price
@@ -571,8 +571,8 @@ def generate_images(product_name: str, price: float | None = None) -> int:
     prompt    = _build_prompt(product_name, price, title, tags, description, brand_ctx)
 
     print(f"  [3] Calling Anthropic API + Canva MCP ({MODEL})")
-    print(f"  [3] Step 1: Generating 6 Canva designs via MCP — estimated 2–4 minutes...")
-    print(f"  [3] Step 2: Exporting JPEGs via Canva Connect API (runs after MCP)")
+    print("  [3] Step 1: Generating 6 Canva designs via MCP — estimated 2–4 minutes...")
+    print("  [3] Step 2: Exporting JPEGs via Canva Connect API (runs after MCP)")
 
     try:
         response = _call_api(prompt)
@@ -621,8 +621,8 @@ def generate_images(product_name: str, price: float | None = None) -> int:
         )
         if not saved_files:
             print(
-                f"  [3] Export download failed — images are in Canva. "
-                f"Export manually to Google Drive and the watcher will queue them."
+                "  [3] Export download failed — images are in Canva. "
+                "Export manually to Google Drive and the watcher will queue them."
             )
             # Still save design URLs and queue with Canva URLs for tracking
             log_run(product_name, "canva_image_generator", "failed",
@@ -648,14 +648,14 @@ def generate_images(product_name: str, price: float | None = None) -> int:
     queue_id = _ensure_queued(product_name, meta)
 
     if queue_id is None:
-        print(f"  [3] Product already in listings — skipping re-queue.")
+        print("  [3] Product already in listings — skipping re-queue.")
         # Still a success — images are downloaded
         log_run(product_name, "canva_image_generator", "success",
                 f"{len(saved_files)} images downloaded — already in listings, not re-queued")
         return 0
 
     print(f"\n  [3] ✓ Phase 3 complete: {len(saved_files)} images + queue ID {queue_id}")
-    print(f"  [3] Pipeline will continue to Phase 4 → 5 → 6 automatically.")
+    print("  [3] Pipeline will continue to Phase 4 → 5 → 6 automatically.")
 
     log_run(product_name, "canva_image_generator", "success",
             f"{len(saved_files)} images downloaded, queue_id={queue_id}")

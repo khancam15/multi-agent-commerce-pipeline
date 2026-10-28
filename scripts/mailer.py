@@ -22,6 +22,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from daily_caps import require
+
 _ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_ROOT / ".env")
 
@@ -30,12 +32,15 @@ def is_configured() -> bool:
     return bool(os.getenv("EMAIL_FROM") and os.getenv("EMAIL_SMTP_PASS"))
 
 
-def send_email(to: str, subject: str, html_body: str, text_body: str = "") -> None:
-    """Send one email. Raises RuntimeError if SMTP is not configured."""
+def send_email(to: str, subject: str, html_body: str, text_body: str = "",
+               kind: str = "email") -> None:
+    """Send one email. Raises RuntimeError if SMTP is not configured or today's
+    cap for `kind` ("email" or "alert", see daily_caps.py) is reached."""
     sender   = os.getenv("EMAIL_FROM", "")
     password = os.getenv("EMAIL_SMTP_PASS", "")
     if not (sender and password):
         raise RuntimeError("EMAIL_FROM and EMAIL_SMTP_PASS must be set in .env")
+    require(kind)
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject

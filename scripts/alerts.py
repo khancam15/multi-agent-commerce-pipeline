@@ -53,7 +53,7 @@ def _send(subject: str, detail: str) -> None:
         return
     try:
         send_email(to, full, f"<p>{html.escape(subject)}</p><pre>{html.escape(detail[:4000])}</pre>",
-                   f"{subject}\n\n{detail[:4000]}")
+                   f"{subject}\n\n{detail[:4000]}", kind="alert")
     except Exception as exc:  # alerts must never break the loop
         print(f"  [alert] Could not send alert email: {exc}")
 

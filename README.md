@@ -84,6 +84,16 @@ For the autonomous VPS loop:
 ./loop.sh --once
 ```
 
+To stop the loop without stopping the service, run `./run.sh pause`. Every
+phase stops at its next step except buyer delivery, so paid orders still get
+their templates. `./run.sh resume` starts it again. Paused phases are not
+counted as failed attempts.
+
+To see the loop's runs in AI Ops Atlas, set `ATLAS_FEED_URL` and
+`ATLAS_FEED_TOKEN` in `.env`. Each phase result (its label, ok or failed, and
+the time) is reported by `scripts/atlas_feed.py`. Prompts, product copy, buyer
+details and keys are never sent, and reporting can never fail the loop.
+
 ## Setup
 
 1. Create a virtualenv and install dependencies.

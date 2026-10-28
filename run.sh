@@ -23,6 +23,8 @@
 #   ./run.sh all                        — Full pipeline: phase1 → phase2
 #   ./run.sh design <product> [--price] — Alias for phase3
 #   ./run.sh full <product>             — Full autonomous: phase3 → 3B → 4 → 5 → 6
+#   ./run.sh pause                      — Pause the autonomous loop (buyer delivery keeps running)
+#   ./run.sh resume                     — Resume the autonomous loop
 #
 # Cron examples:
 #   0 6 * * * /path/to/project/run.sh phase2 >> /path/to/project/outputs/cron.log 2>&1
@@ -166,8 +168,16 @@ case "$PHASE" in
         "$PYTHON" scripts/seo_analyzer.py "$PRODUCT" || true
         "$PYTHON" scripts/storefront.py deploy || true
         ;;
+    pause)
+        touch "$SCRIPT_DIR/PAUSE"
+        echo "[run.sh] Loop paused from the next phase on. Buyer delivery keeps running. Resume: ./run.sh resume"
+        ;;
+    resume)
+        rm -f "$SCRIPT_DIR/PAUSE"
+        echo "[run.sh] Loop resumed. It picks up at its next cycle."
+        ;;
     *)
-        echo "Usage: $0 {db-init|preflight|digest|sales|canva-auth|stripe-auth|phase1|phase2|phase2-rich|phase3|phase3b|phase4|phase5|phase6|phase7|approve|deliver|store-build|store-deploy|backup|all|full|design} [product_name]"
+        echo "Usage: $0 {pause|resume|db-init|preflight|digest|sales|canva-auth|stripe-auth|phase1|phase2|phase2-rich|phase3|phase3b|phase4|phase5|phase6|phase7|approve|deliver|store-build|store-deploy|backup|all|full|design} [product_name]"
         exit 1
         ;;
 esac

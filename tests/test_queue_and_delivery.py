@@ -47,41 +47,46 @@ def test_failing_product_drops_behind_others(tmp_path: Path) -> None:
 def test_template_links_and_delivery_records(tmp_path: Path) -> None:
     db_path = tmp_path / "pipeline.db"
     db.init_db(db_path)
-    db.insert_listing("Kit", "Kit title", "https://s/p/kit", 42,
-                      template_link="https://canva.link/k", status="draft", db_path=db_path)
-    db.insert_listing("Old", "Old title", "https://s/p/old", 43, db_path=db_path)
+    db.insert_listing("Kit", "Kit title", template_link="https://canva.link/k", status="draft",
+                      stripe_product_id="prod_kit", db_path=db_path)
+    db.insert_listing("Old", "Old title", stripe_product_id="prod_old", db_path=db_path)
 
     links = db.template_links_by_product_id(db_path=db_path)
-    assert links == {"42": {"product_name": "Kit", "title": "Kit title",
-                            "template_link": "https://canva.link/k"}}
+    assert links == {"prod_kit": {"product_name": "Kit", "title": "Kit title",
+                                  "template_link": "https://canva.link/k"}}
 
-    assert not db.delivery_exists("1001", "42", db_path=db_path)
-    db.record_delivery("1001", "#1001", "42", "Kit", "failed", "smtp down", db_path=db_path)
-    assert not db.delivery_exists("1001", "42", db_path=db_path)  # failed sends are retried
-    db.record_delivery("1001", "#1001", "42", "Kit", "sent", db_path=db_path)
-    assert db.delivery_exists("1001", "42", db_path=db_path)
+    assert not db.delivery_exists("cs_1", "prod_kit", db_path=db_path)
+    db.record_delivery("cs_1", "#1", "prod_kit", "Kit", "failed", "smtp down", db_path=db_path)
+    assert not db.delivery_exists("cs_1", "prod_kit", db_path=db_path)  # failed sends are retried
+    db.record_delivery("cs_1", "#1", "prod_kit", "Kit", "sent", db_path=db_path)
+    assert db.delivery_exists("cs_1", "prod_kit", db_path=db_path)
 
 
-def test_pending_deliveries_groups_paid_orders(monkeypatch) -> None:
-    links = {"42": {"product_name": "Kit", "title": "Kit", "template_link": "https://canva.link/k"}}
-    delivered = {("2", "42")}
+def _session(session_id, email, products, payment_status="paid"):
+    return {
+        "id": session_id,
+        "payment_status": payment_status,
+        "customer_details": {"email": email},
+        "line_items": {"data": [{"id": f"li_{i}", "price": {"product": p}} for i, p in enumerate(products)]},
+    }
+
+
+def test_pending_deliveries_groups_paid_checkouts(monkeypatch) -> None:
+    links = {"prod_kit": {"product_name": "Kit", "title": "Kit", "template_link": "https://canva.link/k"}}
+    delivered = {("cs_2", "prod_kit")}
     monkeypatch.setattr(order_delivery, "delivery_exists", lambda o, p: (o, p) in delivered)
-    orders = [
-        {"id": 1, "name": "#1", "email": "a@x.test", "financial_status": "paid",
-         "line_items": [{"product_id": 42}, {"product_id": 42}, {"product_id": 7}]},
-        {"id": 2, "name": "#2", "email": "b@x.test", "financial_status": "paid",
-         "line_items": [{"product_id": 42}]},
-        {"id": 3, "name": "#3", "email": "c@x.test", "financial_status": "pending",
-         "line_items": [{"product_id": 42}]},
-        {"id": 4, "name": "#4", "email": "d@x.test", "financial_status": "paid",
-         "cancelled_at": "2026-10-01T00:00:00Z", "line_items": [{"product_id": 42}]},
+    sessions = [
+        _session("cs_test_aaaa1111", "a@x.test", ["prod_kit", {"id": "prod_kit"}, "prod_other"]),
+        _session("cs_2", "b@x.test", ["prod_kit"]),
+        _session("cs_3", "c@x.test", ["prod_kit"], payment_status="unpaid"),
     ]
 
-    todo = order_delivery.pending_deliveries(orders, links)
+    todo = order_delivery.pending_deliveries(sessions, links)
 
     assert len(todo) == 1
-    assert todo[0]["order_id"] == "1" and todo[0]["email"] == "a@x.test"
-    assert [i["product_id"] for i in todo[0]["items"]] == ["42"]
+    assert todo[0]["order_id"] == "cs_test_aaaa1111" and todo[0]["email"] == "a@x.test"
+    assert todo[0]["order_name"] == "#AAAA1111"
+    assert [i["product_id"] for i in todo[0]["items"]] == ["prod_kit"]
 
 
 def test_delivery_email_escapes_titles(monkeypatch) -> None:

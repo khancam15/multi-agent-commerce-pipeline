@@ -1,7 +1,7 @@
 """
 canva_product_creator.py — Phase 3B
 ──────────────────────────────────────
-Creates the actual digital product that buyers download from Shopify.
+Creates the actual digital product that buyers receive after checkout.
 
 This is separate from Phase 3 (mockup images). Phase 3 makes the
 listing look good; Phase 3B makes the thing people actually buy.
@@ -15,7 +15,7 @@ What it does:
   4. Exports a PDF version via Canva Connect API (local backup copy)
   5. Saves template_link + pdf_path to meta.json + a _product.json record
      → Phase 4 (listing_builder) carries the link in listing.json
-     → Phase 5 (shopify_uploader) stores it with the listing, never in the
+     → Phase 5 (stripe_publisher) stores it with the listing, never in the
        public description
      → order_delivery.py emails it to each buyer after payment
 
@@ -549,7 +549,7 @@ def create_product(product_name: str, price: float | None = None) -> int:
     print(f"\n  [3B] ✓ Phase 3B complete: {ptype} template — {status}")
 
     log_run(product_name, "canva_product_creator", "success",
-            f"type={ptype}, pages={len(pages)}, {status} — ready for Shopify upload")
+            f"type={ptype}, pages={len(pages)}, {status} — ready to publish")
     return 0
 
 

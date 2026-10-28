@@ -2,7 +2,7 @@
 listing_builder.py  —  Phase 4.2
 ──────────────────────────────────
 Reads a queue row from SQLite and formats all fields into a structured
-JSON payload that shopify_uploader.py and the validator consume downstream.
+JSON payload that stripe_publisher.py and the validator consume downstream.
 
 Run:
     python scripts/listing_builder.py <product_name>   — uses newest pending row

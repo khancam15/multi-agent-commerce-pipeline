@@ -6,7 +6,7 @@ the loop does any real work. Runs once at loop.sh startup.
 
 Checks (in order):
   1. Required .env keys are present and non-empty
-  2. Shopify Admin API token is valid (GET /admin/api/.../shop.json)
+  2. Stripe secret key is valid (GET /v1/products?limit=1)
   3. Canva access token is valid (GET /v1/users/me)
      → auto-refreshes if expired, saves new tokens to .env
   4. ANTHROPIC_API_KEY is present (not validated with a live call — saves cost)
@@ -17,6 +17,9 @@ Exit codes:
 
 Designed to fail fast with a clear message so you know exactly what to
 fix before the pipeline burns an hour on Phases 1–3B then crashes at Phase 5.
+
+Exit codes: 0 passed, 1 credentials invalid (needs a person),
+75 network error (temporary — safe to retry later).
 """
 
 from __future__ import annotations
@@ -32,21 +35,15 @@ ENV_PATH = _ROOT / ".env"
 
 sys.path.insert(0, str(Path(__file__).parent))
 from api_retry import rget, rpost
-from shopify_common import api_version
 
 CANVA_ME_URL   = "https://api.canva.com/rest/v1/users/me"
 CANVA_TOKEN_URL = "https://api.canva.com/rest/v1/oauth/token"
-SHOPIFY_API_VERSION = api_version()
 
 
 # ── .env helpers ──────────────────────────────────────────────────────────────
 
 def _load() -> dict[str, str]:
     return {k: v for k, v in dotenv_values(ENV_PATH).items() if v is not None}
-
-
-def _normalize_domain(domain: str) -> str:
-    return domain.strip().removeprefix("https://").removeprefix("http://").rstrip("/")
 
 
 def _save(updates: dict[str, str]) -> None:
@@ -61,38 +58,36 @@ def _check_required_keys(env: dict) -> list[str]:
     """Return list of missing required keys."""
     required = [
         "ANTHROPIC_API_KEY",
-        "SHOPIFY_STORE_DOMAIN",
-        "SHOPIFY_ACCESS_TOKEN",
+        "STRIPE_SECRET_KEY",
         "CANVA_ACCESS_TOKEN",
         "CANVA_REFRESH_TOKEN",
     ]
     return [k for k in required if not env.get(k, "").strip()]
 
 
-def _check_shopify(env: dict) -> tuple[bool, str]:
+def _check_stripe(env: dict) -> tuple[bool, str]:
     """
-    Ping the Shopify Admin API with the configured access token.
+    Check the Stripe secret key with a cheap read the pipeline needs anyway.
     Returns (ok, message).
     """
-    domain = _normalize_domain(env["SHOPIFY_STORE_DOMAIN"])
-    url = f"https://{domain}/admin/api/{SHOPIFY_API_VERSION}/shop.json"
+    key = env["STRIPE_SECRET_KEY"].strip()
+    if not key.startswith(("sk_", "rk_")):
+        return False, "STRIPE_SECRET_KEY should start with sk_ or rk_ (use the secret key, not pk_)"
     resp = rget(
-        url,
-        headers={"X-Shopify-Access-Token": env["SHOPIFY_ACCESS_TOKEN"]},
+        "https://api.stripe.com/v1/products",
+        headers={"Authorization": f"Bearer {key}"},
+        params={"limit": 1},
         timeout=15,
-        _label="Shopify preflight",
+        _label="Stripe preflight",
     )
-
+    mode = "test mode" if key.startswith(("sk_test_", "rk_test_")) else "LIVE mode"
     if resp.status_code == 200:
-        shop = resp.json().get("shop", {})
-        name = shop.get("name") or domain
-        return True, f"Shopify token valid ({name}) ✓"
+        return True, f"Stripe key valid ({mode}) ✓"
     if resp.status_code == 401:
-        return False, "Shopify access token invalid — re-run: python scripts/shopify_setup.py"
-    if resp.status_code == 404:
-        return False, f"Shopify store not found: {domain}"
-
-    return False, f"Shopify API unexpected response ({resp.status_code}): {resp.text[:120]}"
+        return False, "Stripe key rejected — check STRIPE_SECRET_KEY in .env"
+    if resp.status_code == 403:
+        return False, "Stripe restricted key lacks permissions — allow Products, Prices, Payment Links (write) and Checkout Sessions (read)"
+    return False, f"Stripe API unexpected response ({resp.status_code}): {resp.text[:120]}"
 
 
 def _check_canva(env: dict) -> tuple[bool, str]:
@@ -180,10 +175,10 @@ def run_preflight() -> bool:
     else:
         print("  [preflight] WARNING: ANTHROPIC_API_KEY doesn't look right (expected sk-ant-...)")
 
-    # ── 3. Shopify token ─────────────────────────────────────────────────────
-    shopify_ok, shopify_msg = _check_shopify(env)
-    print(f"  [preflight] Shopify: {shopify_msg}")
-    if not shopify_ok:
+    # ── 3. Stripe key ────────────────────────────────────────────────────────
+    stripe_ok, stripe_msg = _check_stripe(env)
+    print(f"  [preflight] Stripe: {stripe_msg}")
+    if not stripe_ok:
         fatal = True
 
     # ── 4. Canva token ───────────────────────────────────────────────────────
@@ -196,15 +191,13 @@ def run_preflight() -> bool:
 
     # ── Result ───────────────────────────────────────────────────────────────
     if fatal:
-        print("[preflight] FATAL: Shopify credentials invalid. Fix them before restarting.")
+        print("[preflight] FATAL: Stripe credentials invalid. Fix them before restarting.")
         return False
 
     print("[preflight] Pre-flight passed — starting pipeline.")
     return True
 
 
-# Exit codes: 0 passed, 1 credentials invalid (needs a person),
-# 75 network error (temporary — safe to retry later)
 EXIT_TEMPFAIL = 75
 
 if __name__ == "__main__":

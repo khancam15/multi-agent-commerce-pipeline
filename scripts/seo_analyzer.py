@@ -1,17 +1,17 @@
 """
 seo_analyzer.py — Phase 6
 ──────────────────────────
-Post-publish SEO analysis + auto-apply for Shopify.
+Post-publish SEO analysis + auto-apply for the storefront.
 
 Two stages per run:
-  ANALYZE  — fetch this product's current tags, search Google Shopping via
+  ANALYZE  — read this product's current tags, search Google Shopping via
              Serper API for the primary keyword, extract competitor keywords,
              identify gaps, and write the report to the seo_review table.
 
   APPLY    — build an optimised tag set (keep high-value existing tags, fill
-             gaps with top competitor keywords), PUT it to the live Shopify
-             product via the Admin API, and update the SEO metafields
-             (global.title_tag, global.description_tag).
+             gaps with top competitor keywords) and save it with an SEO title
+             and meta description on the listing. The next storefront build
+             uses them for the product page's meta tags and keywords.
 
 The apply stage runs automatically after analysis unless --analyze-only is
 passed.
@@ -21,13 +21,12 @@ Run:
     python scripts/seo_analyzer.py <product_name> --analyze-only
 
 Requires in .env:
-    SHOPIFY_STORE_DOMAIN
-    SHOPIFY_ACCESS_TOKEN
     SERPER_API_KEY          (for Google Shopping keyword research)
 """
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 from collections import Counter
@@ -36,75 +35,16 @@ from pathlib import Path
 from typing import Any
 
 import requests
-from dotenv import dotenv_values, load_dotenv
-from api_retry import rget, rput
-from shopify_common import api_version
+from dotenv import load_dotenv
 
-from db import insert_seo_review, get_conn, log_run
+from db import get_listing, insert_seo_review, log_run, update_listing
 
 _ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_ROOT / ".env")
-ENV_PATH     = _ROOT / ".env"
-API_VERSION = api_version()
 
-MAX_TAGS     = 250   # Shopify allows up to 250 tags per product
-TAG_MAX_LEN  = 255   # Shopify tag length limit
+MAX_TAGS     = 250   # upper bound on stored tags
+TAG_MAX_LEN  = 255   # longest tag kept
 MIN_KEEP_ORIGINAL = 6
-
-
-# ── Credentials ───────────────────────────────────────────────────────────────
-
-def _load_creds() -> dict[str, str]:
-    return {k: v for k, v in dotenv_values(ENV_PATH).items() if v is not None}
-
-
-def _normalize_domain(domain: str) -> str:
-    return domain.strip().removeprefix("https://").removeprefix("http://").rstrip("/")
-
-
-def _api_base(domain: str) -> str:
-    domain = _normalize_domain(domain)
-    return f"https://{domain}/admin/api/{API_VERSION}"
-
-
-def _hdrs(access_token: str) -> dict[str, str]:
-    return {
-        "X-Shopify-Access-Token": access_token,
-        "Content-Type": "application/json",
-    }
-
-
-# ── Shopify product lookup ─────────────────────────────────────────────────────
-
-def _get_product_id(product_name: str) -> str | None:
-    """Extract Shopify product handle from the shopify_url stored in listings table."""
-    with get_conn() as conn:
-        row = conn.execute(
-            "SELECT shopify_url FROM listings WHERE product_name = ? "
-            "ORDER BY published_at DESC LIMIT 1",
-            (product_name,),
-        ).fetchone()
-    if not row or not row["shopify_url"]:
-        return None
-    # URL format: https://store.myshopify.com/products/{handle}
-    # We need the numeric product ID from the Admin API — look it up by handle
-    return row["shopify_url"]
-
-
-def _get_product_by_handle(domain: str, access_token: str, handle: str) -> dict:
-    """Fetch product data by handle from Shopify Admin API."""
-    resp = rget(
-        f"{_api_base(domain)}/products.json",
-        headers={"X-Shopify-Access-Token": access_token},
-        params={"handle": handle, "fields": "id,title,tags"},
-        timeout=15,
-        _label="Shopify get product",
-    )
-    resp.raise_for_status()
-    products = resp.json().get("products", [])
-    if not products:
-        raise ValueError(f"No Shopify product found with handle: {handle}")
-    return products[0]
 
 
 # ── Serper competitor research ─────────────────────────────────────────────────
@@ -225,7 +165,7 @@ def _build_optimised_tags(
     tags with high-frequency competitor keywords.
 
     Returns (optimised_tags, added_tags, removed_tags).
-    Note: Shopify has no hard tag limit (up to 250), but we keep it focused.
+    Keeps the set focused rather than using every possible keyword.
     """
     current_valid = _normalise_tags(current_tags)
     current_set   = set(current_valid)
@@ -261,62 +201,16 @@ def _build_optimised_tags(
     return optimised, added, removed
 
 
-# ── Shopify update ────────────────────────────────────────────────────────────
+# ── Listing update ────────────────────────────────────────────────────────────
 
-def _update_product_tags(
-    domain: str,
-    access_token: str,
-    product_id: int,
-    tags: list[str],
-) -> bool:
-    """PUT the optimised tag list to the live Shopify product."""
-    tags_str = ", ".join(tags)
-    resp = rput(
-        f"{_api_base(domain)}/products/{product_id}.json",
-        headers=_hdrs(access_token),
-        json={"product": {"id": product_id, "tags": tags_str}},
-        timeout=30,
-        _label="Shopify update tags",
+def _save_seo(product_name: str, tags: list[str], seo_title: str, seo_description: str) -> None:
+    """Store optimised tags and meta text on the listing for the next storefront build."""
+    update_listing(
+        product_name,
+        tags=json.dumps(tags),
+        seo_title=seo_title[:70],
+        seo_description=seo_description[:320],
     )
-    if not resp.ok:
-        print(f"  [6] Tag update failed ({resp.status_code}): {resp.text[:200]}")
-        return False
-    return True
-
-
-def _update_seo_metafields(
-    domain: str,
-    access_token: str,
-    product_id: int,
-    seo_title: str,
-    seo_description: str,
-) -> None:
-    """Update Shopify SEO metafields (title tag + meta description)."""
-    base = f"{_api_base(domain)}/products/{product_id}/metafields.json"
-    hdrs = _hdrs(access_token)
-
-    for key, value in [
-        ("title_tag", seo_title[:70]),
-        ("description_tag", seo_description[:320]),
-    ]:
-        if not value:
-            continue
-        try:
-            resp = requests.post(
-                base,
-                headers=hdrs,
-                json={"metafield": {
-                    "namespace": "global",
-                    "key":       key,
-                    "value":     value,
-                    "type":      "single_line_text_field",
-                }},
-                timeout=15,
-            )
-            if resp.ok:
-                print(f"  [6] SEO metafield updated: {key}")
-        except Exception as exc:
-            print(f"  [6] Metafield update warning ({key}): {exc}")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -324,43 +218,23 @@ def _update_seo_metafields(
 def analyze(product_name: str, apply: bool = True) -> int:
     """
     Full Phase 6:
-      1. Load product from Shopify (ID + current tags)
+      1. Load the listing (title + current tags) from SQLite
       2. Search top competitor keywords via Serper API
       3. Build optimised tag set
       4. Write gap report to seo_review table
-      5. PUT optimised tags + SEO metafields to the live product (unless apply=False)
+      5. Save optimised tags + SEO title/description on the listing (unless apply=False)
 
     Returns gap count (number of tags added).
     """
-    creds = _load_creds()
-
-    domain       = _normalize_domain(creds.get("SHOPIFY_STORE_DOMAIN", ""))
-    access_token = creds.get("SHOPIFY_ACCESS_TOKEN", "")
-
-    if not domain or not access_token:
-        raise RuntimeError(
-            "SHOPIFY_STORE_DOMAIN and SHOPIFY_ACCESS_TOKEN not set in .env — "
-            "run: python scripts/shopify_setup.py"
-        )
-
-    # 6.1 — Get product URL/handle from listings table
-    shopify_url = _get_product_id(product_name)
-    if not shopify_url:
+    listing = get_listing(product_name)
+    if listing is None:
         raise ValueError(
             f"No published listing found for '{product_name}'. "
-            f"Run Phase 5 first, or check the listings table."
+            "Run Phase 5 first, or check the listings table."
         )
 
-    # Extract handle from URL
-    handle = shopify_url.rstrip("/").split("/")[-1]
-    print(f"  [6.1] Product handle: {handle}")
-
-    # 6.2 — Fetch current tags
-    product      = _get_product_by_handle(domain, access_token, handle)
-    product_id   = product["id"]
-    title        = product.get("title", "")
-    tags_raw_str = product.get("tags", "")
-    current_tags = [t.strip() for t in tags_raw_str.split(",") if t.strip()]
+    title        = listing["title"]
+    current_tags = [str(t) for t in json.loads(listing["tags"] or "[]")]
     keyword      = _primary_keyword(title)
 
     print(f"  [6.2] Current tags ({len(current_tags)}): {current_tags[:8]}")
@@ -398,32 +272,19 @@ def analyze(product_name: str, apply: bool = True) -> int:
 
     gap_count = len(added)
 
-    # 6.6 — Apply to live Shopify product
+    # 6.6 — Save to the listing; the storefront build publishes it
     if apply and tags_changed:
-        print(f"  [6.6] Applying {gap_count} tag improvement(s) to product {product_id}...")
-        success = _update_product_tags(domain, access_token, product_id, optimised)
-
-        if success:
-            # Also update SEO metafields
-            seo_title = f"{title} | Digital Template"
-            seo_desc  = f"Download this {title}. Fully editable Canva template, delivered by email. {', '.join(optimised[:5])}."
-            _update_seo_metafields(domain, access_token, product_id, seo_title, seo_desc)
-
-            print("  [6.6] ✓ Product tags + SEO metafields updated on Shopify")
-            log_run(
-                product_name,
-                "seo_analyzer",
-                "success",
-                f"Tags updated — added: {added[:5]}, removed: {removed[:3]}, gap_count: {gap_count}",
-            )
-        else:
-            print("  [6.6] Tag update failed — product is unchanged")
-            log_run(
-                product_name,
-                "seo_analyzer",
-                "failed",
-                f"Tag update API call failed for product {product_id}",
-            )
+        seo_title = f"{title.split('|')[0].strip()} | Editable Canva Template"
+        seo_desc  = (f"{title}. Fully editable Canva template, delivered by email after "
+                     f"checkout. {', '.join(optimised[:5])}.")
+        _save_seo(product_name, optimised, seo_title, seo_desc)
+        print(f"  [6.6] ✓ Saved {len(optimised)} tags + SEO title/description to the listing")
+        log_run(
+            product_name,
+            "seo_analyzer",
+            "success",
+            f"Tags updated — added: {added[:5]}, removed: {removed[:3]}, gap_count: {gap_count}",
+        )
     elif not tags_changed:
         print("  [6.6] Tags already optimal — no update needed")
         log_run(product_name, "seo_analyzer", "success", "Tags already optimal, no update needed")

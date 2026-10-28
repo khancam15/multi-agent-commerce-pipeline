@@ -1,3 +1,4 @@
+import json
 from collections import Counter
 from pathlib import Path
 import sys
@@ -71,21 +72,14 @@ def test_competitor_keywords_extracts_google_shopping_terms(monkeypatch) -> None
 
 
 def test_analyze_applies_cleanup_only_tag_changes(monkeypatch) -> None:
-    updates: list[list[str]] = []
+    updates: list[dict] = []
 
     monkeypatch.setattr(
         seo_analyzer,
-        "_load_creds",
-        lambda: {"SHOPIFY_STORE_DOMAIN": "store.myshopify.com", "SHOPIFY_ACCESS_TOKEN": "token"},
-    )
-    monkeypatch.setattr(seo_analyzer, "_get_product_id", lambda product_name: "https://store.myshopify.com/products/test-product")
-    monkeypatch.setattr(
-        seo_analyzer,
-        "_get_product_by_handle",
-        lambda domain, access_token, handle: {
-            "id": 123,
+        "get_listing",
+        lambda product_name: {
             "title": "Canva Template | Seller Kit",
-            "tags": " Canva Template , canva template",
+            "tags": json.dumps([" Canva Template ", "canva template"]),
         },
     )
     monkeypatch.setattr(
@@ -97,12 +91,14 @@ def test_analyze_applies_cleanup_only_tag_changes(monkeypatch) -> None:
     monkeypatch.setattr(seo_analyzer, "log_run", lambda *args, **kwargs: None)
     monkeypatch.setattr(
         seo_analyzer,
-        "_update_product_tags",
-        lambda domain, access_token, product_id, tags: updates.append(tags) or True,
+        "update_listing",
+        lambda product_name, **fields: updates.append(fields),
     )
-    monkeypatch.setattr(seo_analyzer, "_update_seo_metafields", lambda *args, **kwargs: None)
 
     gap_count = seo_analyzer.analyze("Test Product", apply=True)
 
     assert gap_count == 0
-    assert updates == [["canva template"]]
+    assert len(updates) == 1
+    assert json.loads(updates[0]["tags"]) == ["canva template"]
+    assert updates[0]["seo_title"] == "Canva Template | Editable Canva Template"
+    assert len(updates[0]["seo_description"]) <= 320

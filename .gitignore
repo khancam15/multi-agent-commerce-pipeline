@@ -23,6 +23,10 @@ outputs/*
 !outputs/.gitkeep
 *.log
 
+# Built storefront (deployed to its own branch/repo)
+site/
+site_preview/
+
 # Loop logs (keep directory skeleton in git)
 logs/*
 !logs/.gitkeep

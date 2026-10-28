@@ -90,8 +90,8 @@ COOLDOWN_HOURS="${PUBLISH_COOLDOWN_HOURS:-$(_env_get PUBLISH_COOLDOWN_HOURS 24)}
 echo $$ > "$PID_FILE"
 
 # ── Pre-flight credential check ───────────────────────────────────────────────
-# Validates Shopify, Canva, and Anthropic credentials before doing any real work.
-# Exits the loop immediately if Shopify credentials are broken (non-recoverable).
+# Validates Stripe, Canva, and Anthropic credentials before doing any real work.
+# Exits the loop immediately if Stripe credentials are broken (non-recoverable).
 PREFLIGHT_CODE=0
 "$PYTHON" scripts/preflight.py || PREFLIGHT_CODE=$?
 if [[ $PREFLIGHT_CODE -eq 75 ]]; then
@@ -101,7 +101,7 @@ fi
 if [[ $PREFLIGHT_CODE -ne 0 ]]; then
     echo "[loop] Pre-flight failed — fix credentials and restart. Exiting." >&2
     "$PYTHON" scripts/alerts.py send "Pre-flight failed — loop stopped" \
-        "Fix the credentials reported in logs/loop.log, then: systemctl restart shopify-pipeline"
+        "Fix the credentials reported in logs/loop.log, then: systemctl restart commerce-pipeline"
     exit "$EX_CONFIG"
 fi
 
@@ -249,7 +249,7 @@ PYEOF
 
         # SEO analysis + auto-apply on published listings
         # Processes up to 10 listings per maintain cycle (oldest-SEO-reviewed first)
-        # to avoid Shopify API rate limits while still improving the full catalogue over time.
+        # to keep each cycle short while still improving the full catalogue over time.
         "$PYTHON" - 2>>"$LOG_FILE" <<'PYEOF' || _err "Maintain SEO scan failed — non-fatal."
 import sys, subprocess
 sys.path.insert(0, 'scripts')
@@ -281,6 +281,9 @@ for r in rows:
         print(f"  [maintain] SEO scan failed for {r['product_name']}: {e}")
 PYEOF
 
+        _run_phase "Storefront deploy" "$PYTHON" scripts/storefront.py deploy \
+            || _err "Storefront deploy failed — non-fatal."
+
         _run_phase "Phase 7 (health dashboard)" "$PYTHON" scripts/health_dashboard.py \
             || _err "Phase 7 failed — non-fatal."
 
@@ -307,7 +310,7 @@ PYEOF
     # Phase 1: Brand Builder — runs once every 7 days
     BRAND_AGE=$(_file_age_secs "$SCRIPT_DIR/outputs/brand_guide.md")
     if [[ "$BRAND_AGE" -gt "$WEEK_LIMIT_SECS" ]]; then
-        _run_phase "Phase 1 (brand builder)" "$PYTHON" scripts/shopify_brand_crew.py \
+        _run_phase "Phase 1 (brand builder)" "$PYTHON" scripts/brand_crew.py \
             || { _log "Cycle $CYCLE aborted at phase 1."; _sleep_or_exit; continue; }
     else
         _log "Phase 1 skipped — brand_guide.md is $((BRAND_AGE / 3600))h old (refreshes after 168h)"
@@ -316,7 +319,7 @@ PYEOF
     # Phase 2: Listing content — runs once every 7 days (same cadence as brand)
     MASTER_AGE=$(_file_age_secs "$SCRIPT_DIR/outputs/master.txt")
     if [[ "$MASTER_AGE" -gt "$WEEK_LIMIT_SECS" ]]; then
-        _run_phase "Phase 2 (shopify listing executor)" "$PYTHON" scripts/shopify_autonomous.py \
+        _run_phase "Phase 2 (listing generator)" "$PYTHON" scripts/listing_generator.py \
             || { _log "Cycle $CYCLE aborted at phase 2."; _sleep_or_exit; continue; }
     else
         _log "Phase 2 skipped — master.txt is $((MASTER_AGE / 3600))h old (refreshes after 168h)"
@@ -420,13 +423,17 @@ PYEOF
     _run_phase "Phase 4.5 (file organizer)"   "$PYTHON" scripts/file_organizer.py       "$PRODUCT" \
         || { _queue_failure "$PRODUCT" "phase 4.5"; _log "Cycle $CYCLE aborted at phase 4.5."; _sleep_or_exit; continue; }
 
-    # Phase 5: Publish to Shopify via Admin API (draft unless SHOPIFY_PUBLISH_STATUS=active)
-    _run_phase "Phase 5 (shopify uploader)"   "$PYTHON" scripts/shopify_uploader.py     "$PRODUCT" \
+    # Phase 5: Create the Stripe product (draft unless STORE_PUBLISH_STATUS=active)
+    _run_phase "Phase 5 (stripe publisher)"   "$PYTHON" scripts/stripe_publisher.py     "$PRODUCT" \
         || { _queue_failure "$PRODUCT" "phase 5 upload"; _log "Cycle $CYCLE aborted at phase 5."; _sleep_or_exit; continue; }
 
     # Phase 6: SEO analysis on the new listing (non-fatal)
     _run_phase "Phase 6 (seo analyzer)"       "$PYTHON" scripts/seo_analyzer.py         "$PRODUCT" \
-        || _err "Phase 6 failed — listing is live, SEO skipped."
+        || _err "Phase 6 failed — listing is saved, SEO skipped."
+
+    # Rebuild and deploy the storefront (shows approved products only)
+    _run_phase "Storefront deploy" "$PYTHON" scripts/storefront.py deploy \
+        || _err "Storefront deploy failed — non-fatal."
 
     # Phase 7: Health dashboard
     _run_phase "Phase 7 (health dashboard)"   "$PYTHON" scripts/health_dashboard.py \

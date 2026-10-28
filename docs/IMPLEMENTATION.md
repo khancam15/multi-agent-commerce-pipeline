@@ -30,13 +30,13 @@ logger.info("Starting phase 5", extra={"product_name": product})
 **Usage:**
 ```bash
 # Default: console format
-python scripts/shopify_uploader.py "Product Name"
+python scripts/stripe_publisher.py "Product Name"
 
 # JSON format (for log aggregators)
-LOG_FORMAT=json python scripts/shopify_uploader.py "Product Name"
+LOG_FORMAT=json python scripts/stripe_publisher.py "Product Name"
 
 # Debug level
-LOG_LEVEL=DEBUG python scripts/shopify_uploader.py "Product Name"
+LOG_LEVEL=DEBUG python scripts/stripe_publisher.py "Product Name"
 ```
 
 ---
@@ -48,7 +48,7 @@ LOG_LEVEL=DEBUG python scripts/shopify_uploader.py "Product Name"
 - Opens circuit after 5 consecutive failures
 - Stays open for 5 minutes (configurable)
 - Half-open state for testing recovery
-- Per-host tracking (Shopify, Canva, etc.)
+- Per-host tracking (Stripe, Canva, etc.)
 
 **Configuration:**
 ```bash
@@ -119,7 +119,7 @@ from config import settings
 
 print(settings.weekly_publish_limit)
 print(settings.max_retries)
-print(settings.shopify_api_version)
+print(settings.store_currency)
 ```
 
 **Features:**
@@ -141,13 +141,13 @@ python scripts/config.py
 **Additional recommendations:**
 ```bash
 # On VPS, use systemd EnvironmentFile instead of .env
-# Edit shopify-pipeline.service:
+# Edit commerce-pipeline.service:
 [Service]
-EnvironmentFile=/etc/shopify-pipeline/secrets.env
+EnvironmentFile=/etc/commerce-pipeline/secrets.env
 
 # Set restrictive permissions
-sudo chmod 600 /etc/shopify-pipeline/secrets.env
-sudo chown root:root /etc/shopify-pipeline/secrets.env
+sudo chmod 600 /etc/commerce-pipeline/secrets.env
+sudo chown root:root /etc/commerce-pipeline/secrets.env
 ```
 
 ---
@@ -197,7 +197,7 @@ bandit -r scripts/
 
 **Checks:**
 - ✅ Database connectivity & tables
-- ✅ Shopify API access
+- ✅ Stripe API access
 - ✅ Canva API access
 - ✅ File system permissions
 - ✅ Recent pipeline activity
@@ -235,7 +235,7 @@ Details:
 ✅ file_system          All directories writable (12ms)
 ✅ database             Database healthy (3 listings in last 30 days) (45ms)
 ✅ recent_activity      last publish 2h ago, last run 0h ago (phase5) (8ms)
-✅ shopify_api          Shopify API reachable (Your Store) (342ms)
+✅ stripe_api           Stripe API reachable (test mode) (342ms)
 ⚠️  canva_api           Canva token expired (will auto-refresh) (201ms)
 ────────────────────────────────────────────────────────────
 ```
@@ -248,7 +248,7 @@ Details:
 
 #### Step 1: Add logging to existing scripts
 ```bash
-# Example: Update shopify_uploader.py
+# Example: Update stripe_publisher.py
 # Find:    print(f"[5.1] Loaded listing.json for: {product_name}")
 # Replace: logger.info("Loaded listing.json", extra={"product_name": product_name, "phase": "5.1"})
 ```
@@ -265,11 +265,11 @@ product_name = validate_product_name(sys.argv[1])
 #### Step 3: Use centralized config
 ```python
 # Replace:
-# domain = os.getenv("SHOPIFY_STORE_DOMAIN", "")
+# key = os.getenv("STRIPE_SECRET_KEY", "")
 
 # With:
 from config import settings
-domain = settings.shopify_store_domain
+key = settings.stripe_secret_key
 ```
 
 ---
@@ -277,7 +277,7 @@ domain = settings.shopify_store_domain
 ### Phase 2: Add Monitoring
 
 #### Add health check to systemd service
-Edit `shopify-pipeline.service`:
+Edit `commerce-pipeline.service`:
 
 ```ini
 [Service]
@@ -386,7 +386,7 @@ MAX_BACKOFF=60
 ## 🐛 Troubleshooting
 
 ### Issue: "Circuit breaker open" error
-**Symptom:** `RuntimeError: Circuit breaker open for api.shopify.com`
+**Symptom:** `RuntimeError: Circuit breaker open for api.stripe.com`
 
 **Cause:** API has failed 5+ times in a row
 
@@ -424,7 +424,7 @@ fuser outputs/pipeline.db
 fuser -k outputs/pipeline.db
 
 # Restart pipeline
-systemctl restart shopify-pipeline
+systemctl restart commerce-pipeline
 ```
 
 ---

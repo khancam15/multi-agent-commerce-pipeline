@@ -2,23 +2,21 @@
 order_delivery.py — Post-purchase template delivery
 ────────────────────────────────────────────────────
 Emails each buyer the Canva "Use template" link for every pipeline
-product in a paid order. The link is never shown on the product page,
-so this is the only way buyers receive what they paid for.
+product in a paid Stripe checkout. The link is never shown on the
+storefront, so this is the only way buyers receive what they paid for.
 
 Run:
-    python scripts/order_delivery.py              — deliver new paid orders
+    python scripts/order_delivery.py              — deliver new paid checkouts
     python scripts/order_delivery.py --dry-run    — show what would be sent
     python scripts/order_delivery.py --days 30    — look back further (default 7)
 
-Called by loop.sh every cycle.
+Called by loop.sh every cycle and every DELIVERY_INTERVAL seconds while idle.
 
-Each order line is delivered once (tracked in the deliveries table).
+Each checkout line is delivered once (tracked in the deliveries table).
 Failed sends are retried on the next run.
 
 Requires:
-    SHOPIFY_STORE_DOMAIN, SHOPIFY_ACCESS_TOKEN — app needs read_orders and
-        access to the customer email field (Shopify admin → app → API access
-        → Protected customer data: Email)
+    STRIPE_SECRET_KEY — see stripe_common.py
     EMAIL_FROM, EMAIL_SMTP_PASS — see mailer.py
 Optional:
     SUPPORT_EMAIL — reply address shown to buyers (defaults to EMAIL_FROM)
@@ -33,10 +31,9 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from dotenv import dotenv_values, load_dotenv
+from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
-from api_retry import rget
 from db import (
     delivery_exists,
     init_db,
@@ -45,34 +42,10 @@ from db import (
     template_links_by_product_id,
 )
 from mailer import is_configured, send_email
-from shopify_common import api_base, headers, normalize_domain
+from stripe_common import line_item_product_id, paid_checkout_sessions
 
-_ROOT    = Path(__file__).resolve().parent.parent
-ENV_PATH = _ROOT / ".env"
-load_dotenv(ENV_PATH)
-
-PAGE_SIZE = 250
-PAID_STATUSES = {"paid", "partially_refunded"}
-
-
-def _fetch_paid_orders(domain: str, token: str, since: str) -> list[dict[str, Any]]:
-    """Fetch every paid order created since `since`, following cursor pagination."""
-    orders: list[dict[str, Any]] = []
-    params: dict[str, Any] = {
-        "status": "any",
-        "created_at_min": since,
-        "limit": PAGE_SIZE,
-        "fields": "id,name,email,contact_email,financial_status,cancelled_at,line_items",
-    }
-    url = f"{api_base(domain)}/orders.json"
-    while url:
-        resp = rget(url, headers=headers(token), params=params, timeout=30,
-                    _label="Shopify paid orders")
-        resp.raise_for_status()
-        orders.extend(resp.json().get("orders", []))
-        url = resp.links.get("next", {}).get("url", "")
-        params = {}  # the next-page URL already carries its cursor
-    return orders
+_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_ROOT / ".env")
 
 
 def build_email(order_name: str, items: list[dict[str, str]]) -> tuple[str, str, str]:
@@ -104,33 +77,34 @@ def build_email(order_name: str, items: list[dict[str, str]]) -> tuple[str, str,
 
 
 def pending_deliveries(
-    orders: list[dict[str, Any]],
+    sessions: list[dict[str, Any]],
     links: dict[str, dict[str, str]],
 ) -> list[dict[str, Any]]:
     """
-    Group undelivered pipeline products by order.
+    Group undelivered pipeline products by paid checkout session.
     Returns [{order_id, order_name, email, items: [{product_id, product_name, title, template_link}]}].
     """
     result: list[dict[str, Any]] = []
-    for order in orders:
-        if order.get("cancelled_at") or order.get("financial_status") not in PAID_STATUSES:
+    for session in sessions:
+        if session.get("payment_status") not in ("paid", "no_payment_required"):
             continue
-        order_id = str(order.get("id", ""))
+        session_id = str(session.get("id", ""))
         items: list[dict[str, str]] = []
         seen: set[str] = set()
-        for line in order.get("line_items", []):
-            product_id = str(line.get("product_id") or "")
+        for line in (session.get("line_items") or {}).get("data", []):
+            product_id = line_item_product_id(line)
             if product_id in seen or product_id not in links:
                 continue
             seen.add(product_id)
-            if delivery_exists(order_id, product_id):
+            if delivery_exists(session_id, product_id):
                 continue
             items.append({"product_id": product_id, **links[product_id]})
         if items:
+            details = session.get("customer_details") or {}
             result.append({
-                "order_id": order_id,
-                "order_name": order.get("name") or order_id,
-                "email": order.get("email") or order.get("contact_email") or "",
+                "order_id": session_id,
+                "order_name": f"#{session_id[-8:].upper()}",
+                "email": details.get("email") or session.get("customer_email") or "",
                 "items": items,
             })
     return result
@@ -139,11 +113,6 @@ def pending_deliveries(
 def deliver(days: int = 7, dry_run: bool = False) -> int:
     """Send delivery emails. Returns the number of orders that failed."""
     init_db()
-    env    = {k: v for k, v in dotenv_values(ENV_PATH).items() if v is not None}
-    domain = normalize_domain(env.get("SHOPIFY_STORE_DOMAIN", ""))
-    token  = env.get("SHOPIFY_ACCESS_TOKEN", "")
-    if not domain or not token:
-        raise RuntimeError("SHOPIFY_STORE_DOMAIN and SHOPIFY_ACCESS_TOKEN are required")
     links = template_links_by_product_id()
     if not links:
         print("  [delivery] No published products with template links yet")
@@ -151,20 +120,20 @@ def deliver(days: int = 7, dry_run: bool = False) -> int:
     if not dry_run and not is_configured():
         raise RuntimeError("EMAIL_FROM and EMAIL_SMTP_PASS are required to deliver templates")
 
-    since  = (datetime.now(UTC) - timedelta(days=days)).isoformat()
-    orders = _fetch_paid_orders(domain, token, since)
-    todo   = pending_deliveries(orders, links)
-    print(f"  [delivery] {len(orders)} paid order(s) in the last {days} days, "
+    since    = datetime.now(UTC) - timedelta(days=days)
+    sessions = list(paid_checkout_sessions(since))
+    todo     = pending_deliveries(sessions, links)
+    print(f"  [delivery] {len(sessions)} paid checkout(s) in the last {days} days, "
           f"{len(todo)} need delivery")
 
     failures = 0
     for d in todo:
         names = ", ".join(i["product_name"] for i in d["items"])
         if not d["email"]:
-            print(f"  [delivery] {d['order_name']}: no buyer email on the order — skipping")
+            print(f"  [delivery] {d['order_name']}: no buyer email on the checkout — skipping")
             for i in d["items"]:
                 record_delivery(d["order_id"], d["order_name"], i["product_id"],
-                                i["product_name"], "no_email", "Order has no email address")
+                                i["product_name"], "no_email", "Checkout has no email address")
             failures += 1
             continue
         if dry_run:

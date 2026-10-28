@@ -17,7 +17,7 @@ Non-retryable (raised immediately):
 Non-idempotent methods (POST, PATCH) are only retried on 429, which means
 the server rejected the request without processing it. A timeout, dropped
 connection or 5xx on a POST may mean the server already acted (for example
-created a Shopify product), so retrying could duplicate it. Pass
+created a product), so retrying could duplicate it. Pass
 _idempotent=True to opt a POST into full retries when duplicates are harmless.
 
 Usage:
@@ -153,7 +153,7 @@ def retry_request(
     Args:
         method:  HTTP method string — "GET", "POST", "PUT", etc.
         url:     Full URL.
-        _label:  Optional label shown in retry log lines (e.g. "Shopify create listing").
+        _label:  Optional label shown in retry log lines (e.g. "Stripe create product").
         **kwargs: Passed directly to requests.request() — headers, json, data, timeout, etc.
 
     Returns:
@@ -193,7 +193,7 @@ def retry_request(
                 # Exhausted — return the failure response so callers can inspect it
                 return resp
 
-            # Honour Retry-After header (Shopify and Canva both send it on 429)
+            # Honour Retry-After header (Stripe and Canva both send it on 429)
             retry_after = resp.headers.get("Retry-After")
             if retry_after:
                 try:

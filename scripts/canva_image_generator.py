@@ -2,7 +2,7 @@
 canva_image_generator.py — Phase 3
 ────────────────────────────────────
 Fully autonomous Canva image generator. Reads listing content from
-outputs/master.txt, generates 6 conversion-optimised Shopify product
+outputs/master.txt, generates 6 conversion-optimised product
 images via Anthropic API + Canva remote MCP, exports each as a JPEG,
 downloads them to 02_Products/[ProductName]/Mockups/, and queues the
 product for Phase 4.
@@ -10,7 +10,7 @@ product for Phase 4.
 After this script exits 0, the product is in the queue with images
 on disk — Phase 4 can run immediately in the same loop cycle.
 
-Image slots (Shopify conversion strategy):
+Image slots (conversion strategy):
   1 — Before/After hero    (stop the scroll — highest CTR format)
   2 — Features + price     (value proof — price anchoring)
   3 — Filled-in preview    (remove doubt — show exactly what they get)
@@ -90,7 +90,7 @@ class ImageEntry(TypedDict):
     design_url: str
     export_url: str
 
-# ── 6-slot Shopify conversion strategy ──────────────────────────────────────────
+# ── 6-slot conversion strategy ─────────────────────────────────────────────────
 SLOTS: list[SlotSpec] = [
     {
         "slot": 1,
@@ -217,11 +217,11 @@ def _build_prompt(
         for s in SLOTS
     )
 
-    return f"""You are generating 6 Shopify product mockup images for a digital product using Canva, then exporting each one.
+    return f"""You are generating 6 product mockup images for a digital product using Canva, then exporting each one.
 
 PRODUCT:
   Name:        {product_name}
-  Shopify title:  {title}
+  Listing title:  {title}
   Price:       ${price}
   Keywords:    {", ".join(tags[:8])}
   Description: {description[:250]}
@@ -239,7 +239,7 @@ YOUR STEPS — execute fully in order:
    IMAGE_[N]_DESIGN: https://www.canva.com/design/...
 
 DESIGN RULES (apply to all 6):
-- Format: instagram_post — 1080×1350 portrait (Shopify product optimal)
+- Format: instagram_post — 1080×1350 portrait (product page optimal)
 - Cream #faf7f2 background, blush #c4a0a0 accents, dark text for readability
 - Serif headlines, clean sans body, generous white space, premium finish
 - Include product name and ${price} where relevant to each image's purpose

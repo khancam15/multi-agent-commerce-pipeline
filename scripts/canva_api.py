@@ -328,7 +328,7 @@ class CanvaClient:
 
         When a buyer clicks this link, Canva creates their own editable
         copy — they never touch the original. This is the standard
-        delivery mechanism for Canva templates sold on Shopify.
+        delivery mechanism for Canva templates sold through the store.
 
         Returns a canva.com URL string.
         Raises CanvaAPIError if no template link could be created. There is

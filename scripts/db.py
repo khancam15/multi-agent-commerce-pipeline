@@ -5,10 +5,11 @@ Single source of truth for all database operations.
 Tables:
   queue       — product work queue (pending → published, or failed after
                 QUEUE_MAX_ATTEMPTS failed publish attempts)
-  listings    — published products, with the private template link
+  listings    — published products: Stripe IDs, payment link, storefront
+                page details and the private template link
   run_log     — timestamped execution record per product
   seo_review  — post-publish tag gap analysis results
-  sales       — Shopify order line-item revenue
+  sales       — Stripe checkout line-item revenue
   deliveries  — template links emailed to buyers (one row per order + product)
 """
 
@@ -30,10 +31,25 @@ SEO_REVIEW_JSON_COLUMNS = (
 )
 
 LISTINGS_OPTIONAL_COLUMNS = {
+    # Legacy Shopify columns, kept so older databases still load
     "shopify_url": "TEXT",
     "shopify_product_id": "TEXT",
     "template_link": "TEXT",
-    "status": "TEXT",
+    "status": "TEXT",            # draft / active
+    "stripe_product_id": "TEXT",
+    "stripe_price_id": "TEXT",
+    "payment_link_id": "TEXT",
+    "payment_link_url": "TEXT",
+    "page_url": "TEXT",          # storefront product page
+    "slug": "TEXT",
+    "price": "REAL",
+    "currency": "TEXT",
+    "description": "TEXT",
+    "category": "TEXT",
+    "tags": "TEXT",              # JSON array
+    "images": "TEXT",            # JSON array of storefront asset paths
+    "seo_title": "TEXT",
+    "seo_description": "TEXT",
 }
 
 QUEUE_OPTIONAL_COLUMNS = {
@@ -331,52 +347,97 @@ def title_exists(title: str, db_path: Path = DB_PATH) -> bool:
 def insert_listing(
     product_name: str,
     title: str,
-    shopify_url: str | None,
+    shopify_url: str | None = None,
     shopify_product_id: str | int | None = None,
     template_link: str | None = None,
     status: str | None = None,
     db_path: Path = DB_PATH,
+    **fields: object,
 ) -> None:
+    """
+    Insert or update the listing for `title`. Extra keyword fields must be
+    LISTINGS_OPTIONAL_COLUMNS; None values leave an existing value unchanged.
+    """
+    unknown = set(fields) - set(LISTINGS_OPTIONAL_COLUMNS)
+    if unknown:
+        raise ValueError(f"Unknown listing fields: {sorted(unknown)}")
+    values: dict[str, object] = {
+        "shopify_url": shopify_url,
+        "shopify_product_id": str(shopify_product_id) if shopify_product_id else None,
+        "template_link": template_link or None,
+        "status": status,
+        **fields,
+    }
+    columns = ["product_name", "title", *values, "published_at"]
     now = _utc_now().isoformat()
+    updates = ", ".join(
+        f"{c} = COALESCE(excluded.{c}, listings.{c})" for c in values
+    )
     with get_conn(db_path) as conn:
         _ensure_optional_columns(conn, "listings", LISTINGS_OPTIONAL_COLUMNS)
         conn.execute(
-            """INSERT INTO listings
-               (product_name, title, shopify_url, shopify_product_id,
-                template_link, status, published_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
-               ON CONFLICT(title) DO UPDATE SET
-                   product_name = excluded.product_name,
-                   shopify_url = excluded.shopify_url,
-                   shopify_product_id = excluded.shopify_product_id,
-                   template_link = COALESCE(excluded.template_link, listings.template_link),
-                   status = COALESCE(excluded.status, listings.status),
-                   published_at = excluded.published_at""",
-            (product_name, title, shopify_url, str(shopify_product_id or ""),
-             template_link or None, status, now),
+            f"""INSERT INTO listings ({", ".join(columns)})
+                VALUES ({", ".join("?" for _ in columns)})
+                ON CONFLICT(title) DO UPDATE SET
+                    product_name = excluded.product_name,
+                    {updates},
+                    published_at = excluded.published_at""",
+            (product_name, title, *values.values(), now),
         )
+
+
+def update_listing(product_name: str, db_path: Path = DB_PATH, **fields: object) -> None:
+    """Set fields on the newest listing for a product (keys from LISTINGS_OPTIONAL_COLUMNS)."""
+    unknown = set(fields) - set(LISTINGS_OPTIONAL_COLUMNS)
+    if unknown or not fields:
+        raise ValueError(f"Unknown or missing listing fields: {sorted(unknown)}")
+    assignments = ", ".join(f"{c} = ?" for c in fields)
+    with get_conn(db_path) as conn:
+        _ensure_optional_columns(conn, "listings", LISTINGS_OPTIONAL_COLUMNS)
+        conn.execute(
+            f"""UPDATE listings SET {assignments} WHERE id = (
+                    SELECT id FROM listings WHERE product_name = ?
+                    ORDER BY published_at DESC LIMIT 1)""",
+            (*fields.values(), product_name),
+        )
+
+
+def get_listing(product_name: str, db_path: Path = DB_PATH) -> sqlite3.Row | None:
+    with get_conn(db_path) as conn:
+        _ensure_optional_columns(conn, "listings", LISTINGS_OPTIONAL_COLUMNS)
+        return conn.execute(
+            "SELECT * FROM listings WHERE product_name = ? ORDER BY published_at DESC LIMIT 1",
+            (product_name,),
+        ).fetchone()
+
+
+def storefront_listings(db_path: Path = DB_PATH) -> list[sqlite3.Row]:
+    """Live listings that can be bought: approved and with a payment link."""
+    with get_conn(db_path) as conn:
+        _ensure_optional_columns(conn, "listings", LISTINGS_OPTIONAL_COLUMNS)
+        return conn.execute(
+            """SELECT * FROM listings
+               WHERE status = 'active' AND COALESCE(payment_link_url, '') != ''
+                 AND COALESCE(slug, '') != ''
+               ORDER BY published_at DESC"""
+        ).fetchall()
 
 
 def set_listing_status(product_name: str, status: str, db_path: Path = DB_PATH) -> None:
-    with get_conn(db_path) as conn:
-        _ensure_optional_columns(conn, "listings", LISTINGS_OPTIONAL_COLUMNS)
-        conn.execute(
-            "UPDATE listings SET status = ? WHERE product_name = ?",
-            (status, product_name),
-        )
+    update_listing(product_name, db_path=db_path, status=status)
 
 
 def template_links_by_product_id(db_path: Path = DB_PATH) -> dict[str, dict[str, str]]:
-    """Map Shopify product ID → {product_name, title, template_link} for delivery."""
+    """Map Stripe product ID → {product_name, title, template_link} for delivery."""
     with get_conn(db_path) as conn:
         _ensure_optional_columns(conn, "listings", LISTINGS_OPTIONAL_COLUMNS)
         rows = conn.execute(
-            """SELECT shopify_product_id, product_name, title, template_link FROM listings
-               WHERE COALESCE(shopify_product_id, '') != ''
+            """SELECT stripe_product_id, product_name, title, template_link FROM listings
+               WHERE COALESCE(stripe_product_id, '') != ''
                  AND COALESCE(template_link, '') != ''"""
         ).fetchall()
     return {
-        r["shopify_product_id"]: {
+        r["stripe_product_id"]: {
             "product_name": r["product_name"],
             "title": r["title"],
             "template_link": r["template_link"],

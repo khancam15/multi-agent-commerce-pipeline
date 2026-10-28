@@ -50,7 +50,7 @@ def generate_report() -> str:
 
         # Published this week
         published = conn.execute(
-            "SELECT COUNT(*) FROM run_log WHERE status = 'success' AND phase = 'shopify_uploader' AND run_at >= ?",
+            "SELECT COUNT(*) FROM run_log WHERE status = 'success' AND phase IN ('shopify_uploader', 'stripe_publisher') AND run_at >= ?",
             (week_start,),
         ).fetchone()[0]
 
@@ -97,7 +97,7 @@ def generate_report() -> str:
     sales = get_sales_summary(days=7)
 
     lines.append("=" * 50)
-    lines.append("  AI Shopify Pipeline — Daily Health Dashboard")
+    lines.append("  Commerce Pipeline — Daily Health Dashboard")
     lines.append(f"  Generated: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')} UTC")
     lines.append("=" * 50)
     lines.append("")

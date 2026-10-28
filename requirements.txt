@@ -10,5 +10,5 @@ Pillow>=10.3.0
 requests>=2.32.0
 
 # Utilities
-python-dotenv==1.1.1
+python-dotenv==1.2.2
 rich==14.3.4

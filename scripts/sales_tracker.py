@@ -12,7 +12,7 @@ Run:
 Called by loop.sh once per day alongside the email digest.
 
 Shopify API used:
-    GET /admin/api/2024-01/orders.json
+    GET /admin/api/<SHOPIFY_API_VERSION>/orders.json
     Fields: id, line_items (product_id, title, price, quantity),
             total_price, total_discounts, created_at, financial_status
 
@@ -23,7 +23,6 @@ Requires in .env:
 
 from __future__ import annotations
 
-import os
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -45,8 +44,9 @@ from db import (
     upsert_sale,
 )
 from api_retry import rget
+from shopify_common import api_version
 
-API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+API_VERSION = api_version()
 PAGE_SIZE   = 250  # Shopify max per page
 
 
@@ -237,7 +237,7 @@ def sync_sales(full: bool = False) -> dict[str, Any]:
             created_at_min = last_date
             print(f"  [sales] Incremental sync from: {last_date[:10]}")
     if full or created_at_min is None:
-        print(f"  [sales] Full sync — fetching all orders")
+        print("  [sales] Full sync — fetching all orders")
 
     new_count  = 0
     page_info: str | None = None

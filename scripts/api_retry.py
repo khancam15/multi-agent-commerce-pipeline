@@ -14,6 +14,12 @@ Non-retryable (raised immediately):
   • 4xx other than 429     — bad request, auth failure, not found
   • RequestException       — malformed request
 
+Non-idempotent methods (POST, PATCH) are only retried on 429, which means
+the server rejected the request without processing it. A timeout, dropped
+connection or 5xx on a POST may mean the server already acted (for example
+created a Shopify product), so retrying could duplicate it. Pass
+_idempotent=True to opt a POST into full retries when duplicates are harmless.
+
 Usage:
     from api_retry import retry_request
 
@@ -30,6 +36,7 @@ Usage:
 
 from __future__ import annotations
 
+import os
 import time
 from datetime import datetime, timedelta
 from typing import Any
@@ -38,14 +45,17 @@ from urllib.parse import urlparse
 import requests
 
 # ── Config ────────────────────────────────────────────────────────────────────
-MAX_RETRIES      = 3
-BACKOFF_BASE     = 2   # seconds — delays are 2s, 4s, 8s
-MAX_BACKOFF      = 60  # cap so we never wait longer than a minute
+# Overridable from .env (same names as config.py); callers load .env before importing
+MAX_RETRIES      = int(os.getenv("MAX_RETRIES", "3"))
+BACKOFF_BASE     = int(os.getenv("BACKOFF_BASE", "2"))   # seconds — delays are 2s, 4s, 8s
+MAX_BACKOFF      = int(os.getenv("MAX_BACKOFF", "60"))   # cap so we never wait longer than a minute
 RETRYABLE_STATUS = {429, 500, 502, 503, 504}
+IDEMPOTENT_METHODS = {"GET", "HEAD", "OPTIONS", "PUT", "DELETE"}
 
-# Circuit breaker config
-CIRCUIT_FAILURE_THRESHOLD = 5       # Open circuit after 5 consecutive failures
-CIRCUIT_TIMEOUT_SECONDS   = 300     # Keep circuit open for 5 minutes
+# Circuit breaker config. State is kept in memory, so it only protects calls
+# made within one process (one phase run); each phase starts with it closed.
+CIRCUIT_FAILURE_THRESHOLD = int(os.getenv("CIRCUIT_FAILURE_THRESHOLD", "5"))
+CIRCUIT_TIMEOUT_SECONDS   = int(os.getenv("CIRCUIT_TIMEOUT_SECONDS", "300"))
 CIRCUIT_HALF_OPEN_ATTEMPTS = 1     # Allow 1 test request when half-open
 
 # ── Circuit Breaker State ─────────────────────────────────────────────────────
@@ -134,6 +144,7 @@ def retry_request(
     url: str,
     *,
     _label: str = "",          # optional human-readable label for log lines
+    _idempotent: bool | None = None,  # None = decide from the HTTP method
     **kwargs: Any,
 ) -> requests.Response:
     """
@@ -154,6 +165,9 @@ def retry_request(
     """
     label = f"[{_label}] " if _label else ""
     host = _get_host(url)
+    idempotent = (
+        method.upper() in IDEMPOTENT_METHODS if _idempotent is None else _idempotent
+    )
     last_exc: Exception | None = None
 
     # Check circuit breaker before attempting request
@@ -174,7 +188,8 @@ def retry_request(
             # Retryable HTTP status - record as failure
             _record_failure(host)
 
-            if attempt == MAX_RETRIES:
+            # A 5xx on a non-idempotent request may have been processed — don't repeat it
+            if attempt == MAX_RETRIES or (resp.status_code != 429 and not idempotent):
                 # Exhausted — return the failure response so callers can inspect it
                 return resp
 
@@ -198,7 +213,8 @@ def retry_request(
             last_exc = exc
             _record_failure(host)  # Record network failures too
 
-            if attempt == MAX_RETRIES:
+            # The request may have reached the server — only repeat it if that is safe
+            if attempt == MAX_RETRIES or not idempotent:
                 raise
 
             wait = min(BACKOFF_BASE ** (attempt + 1), MAX_BACKOFF)

@@ -38,13 +38,14 @@ from typing import Any
 import requests
 from dotenv import dotenv_values, load_dotenv
 from api_retry import rget, rput
+from shopify_common import api_version
 
 from db import insert_seo_review, get_conn, log_run
 
 _ROOT = Path(__file__).resolve().parent.parent
 load_dotenv(_ROOT / ".env")
 ENV_PATH     = _ROOT / ".env"
-API_VERSION  = os.getenv("SHOPIFY_API_VERSION", "2024-01")
+API_VERSION = api_version()
 
 MAX_TAGS     = 250   # Shopify allows up to 250 tags per product
 TAG_MAX_LEN  = 255   # Shopify tag length limit
@@ -405,10 +406,10 @@ def analyze(product_name: str, apply: bool = True) -> int:
         if success:
             # Also update SEO metafields
             seo_title = f"{title} | Digital Template"
-            seo_desc  = f"Download this {title}. Instant access, fully editable Canva template. {', '.join(optimised[:5])}."
+            seo_desc  = f"Download this {title}. Fully editable Canva template, delivered by email. {', '.join(optimised[:5])}."
             _update_seo_metafields(domain, access_token, product_id, seo_title, seo_desc)
 
-            print(f"  [6.6] ✓ Product tags + SEO metafields updated on Shopify")
+            print("  [6.6] ✓ Product tags + SEO metafields updated on Shopify")
             log_run(
                 product_name,
                 "seo_analyzer",
@@ -416,7 +417,7 @@ def analyze(product_name: str, apply: bool = True) -> int:
                 f"Tags updated — added: {added[:5]}, removed: {removed[:3]}, gap_count: {gap_count}",
             )
         else:
-            print(f"  [6.6] Tag update failed — product is unchanged")
+            print("  [6.6] Tag update failed — product is unchanged")
             log_run(
                 product_name,
                 "seo_analyzer",
@@ -424,7 +425,7 @@ def analyze(product_name: str, apply: bool = True) -> int:
                 f"Tag update API call failed for product {product_id}",
             )
     elif not tags_changed:
-        print(f"  [6.6] Tags already optimal — no update needed")
+        print("  [6.6] Tags already optimal — no update needed")
         log_run(product_name, "seo_analyzer", "success", "Tags already optimal, no update needed")
     else:
         print(f"  [6.6] Analyze-only mode — {gap_count} improvement(s) identified but not applied")

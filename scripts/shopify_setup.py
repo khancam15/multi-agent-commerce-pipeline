@@ -32,11 +32,13 @@ from pathlib import Path
 import requests
 from dotenv import dotenv_values, load_dotenv
 
+from shopify_common import api_version
+
 _ROOT    = Path(__file__).resolve().parent.parent
 ENV_PATH = _ROOT / ".env"
 load_dotenv(ENV_PATH)
 
-API_VERSION = "2024-01"
+API_VERSION = api_version()
 
 
 def _normalize_domain(domain: str) -> str:

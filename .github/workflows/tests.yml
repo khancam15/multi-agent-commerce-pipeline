@@ -1,0 +1,40 @@
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Tests and lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+
+      - name: Setup Python
+        uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7.0.0
+        with:
+          python-version: '3.12'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip && pip install -r requirements-dev.txt
+
+      - name: Compile
+        run: python -m compileall -q scripts tests
+
+      - name: Lint (pyflakes rules)
+        run: ruff check --select F scripts tests
+
+      - name: Shell syntax
+        run: for f in run.sh loop.sh setup_vps.sh test_infrastructure.sh; do bash -n "$f"; done
+
+      - name: Run tests
+        run: pytest -q

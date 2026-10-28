@@ -15,6 +15,10 @@
 #   ./run.sh phase5 <product>           — Upload staged listing to Shopify via Admin API
 #   ./run.sh phase6 <product>           — SEO gap analysis + auto-apply best tags to live listing
 #   ./run.sh phase7                     — Daily health dashboard
+#   ./run.sh approve <product>          — Make a reviewed draft product live (--list to see drafts)
+#   ./run.sh deliver [--dry-run]        — Email template links to buyers of paid orders
+#   ./run.sh backfill [--apply]         — Move template links out of old product descriptions
+#   ./run.sh backup                     — Back up the SQLite database to backups/
 #   ./run.sh all                        — Full pipeline: phase1 → phase2
 #   ./run.sh design <product> [--price] — Alias for phase3
 #   ./run.sh full <product>             — Full autonomous: phase3 → 3B → 4 → 5 → 6
@@ -122,6 +126,22 @@ case "$PHASE" in
         echo "[run.sh] Phase 7 — Health dashboard"
         "$PYTHON" scripts/health_dashboard.py
         ;;
+    approve)
+        echo "[run.sh] Approving draft product"
+        "$PYTHON" scripts/approve_listing.py ${2:+"$2"}
+        ;;
+    deliver)
+        echo "[run.sh] Delivering template links to buyers"
+        "$PYTHON" scripts/order_delivery.py ${2:+"$2"}
+        ;;
+    backfill)
+        echo "[run.sh] Backfilling template links for existing products"
+        "$PYTHON" scripts/backfill_template_links.py ${2:+"$2"}
+        ;;
+    backup)
+        echo "[run.sh] Backing up database"
+        "$PYTHON" scripts/backup_db.py
+        ;;
     all)
         echo "[run.sh] Running full pipeline: Phase 1 → Phase 2"
         "$PYTHON" scripts/shopify_brand_crew.py
@@ -140,7 +160,7 @@ case "$PHASE" in
         "$PYTHON" scripts/seo_analyzer.py "$PRODUCT" || true
         ;;
     *)
-        echo "Usage: $0 {db-init|digest|canva-auth|shopify-auth|phase1|phase2|phase2-rich|phase3|phase4|phase5|phase6|phase7|all|full|design} [product_name]"
+        echo "Usage: $0 {db-init|preflight|digest|sales|canva-auth|shopify-auth|phase1|phase2|phase2-rich|phase3|phase3b|phase4|phase5|phase6|phase7|approve|deliver|backfill|backup|all|full|design} [product_name]"
         exit 1
         ;;
 esac

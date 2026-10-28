@@ -25,10 +25,25 @@ Phase 2   Product listing plan     -> outputs/master.txt
 Phase 3   Canva mockup images      -> 02_Products/<product>/Mockups/
 Phase 3B  Canva product/template   -> 03_Canva_Exports/<product>/meta.json
 Phase 4   Process, build, validate -> 04_Assets/ReadyToUpload/<product>/
-Phase 5   Publish to Shopify       -> Shopify Admin API
+Phase 5   Publish to Shopify       -> Shopify Admin API (draft until approved)
+Delivery  Email template links     -> buyers of paid orders, every 10 minutes
 Phase 6   SEO refresh              -> Shopify tags + SEO metafields
 Phase 7   Health dashboard         -> stdout/email-ready report
 ```
+
+## How buyers get the product
+
+The Canva "Use template" link is the product, so it never appears on the product page.
+
+1. Phase 3B creates the template link. If it cannot, the product is not published.
+2. Phase 5 creates the Shopify product as a **draft** and stores the link in SQLite.
+3. You review the draft in Shopify admin, then run `./run.sh approve "Product Name"`.
+4. After each paid order, `order_delivery.py` emails the buyer their link from `EMAIL_FROM`.
+   The loop checks for new orders every 10 minutes.
+
+For products published before this change, run `./run.sh backfill` to see which
+descriptions still contain the link, then `./run.sh backfill --apply` to store the
+links and remove them from the live descriptions.
 
 ## Main Commands
 
@@ -45,6 +60,11 @@ Phase 7   Health dashboard         -> stdout/email-ready report
 ./run.sh phase6 "Product Name"
 ./run.sh phase7
 ./run.sh sales
+./run.sh approve "Product Name"     # make a reviewed draft live (--list shows drafts)
+./run.sh deliver --dry-run          # show which buyers would be emailed
+./run.sh deliver                    # email template links for new paid orders
+./run.sh backfill [--apply]         # fix products published before private delivery
+./run.sh backup                     # copy pipeline.db to backups/
 ./run.sh full "Product Name"
 ```
 
@@ -107,7 +127,9 @@ write_orders
 read_inventory
 ```
 
-The uploader creates an active Shopify product, embeds mockup images, stores the product URL and product ID locally, and marks the queue row as published.
+Delivery emails need the buyer's email address, so also enable **Protected customer data access → Email** for the app.
+
+The uploader checks that no product with the same title exists, creates a draft product (or active, with `SHOPIFY_PUBLISH_STATUS=active`), embeds mockup images, stores the product URL, product ID and template link locally, and marks the queue row as published. A product that fails Phases 3B to 5 three times is marked `failed` in the queue so it does not block the others.
 
 ## Database
 
@@ -121,6 +143,7 @@ listings    published Shopify products, including shopify_url and shopify_produc
 run_log     phase status history
 seo_review  before/after SEO tag audit trail
 sales       Shopify order line-item revenue
+deliveries  template links emailed to buyers
 ```
 
 ## Services

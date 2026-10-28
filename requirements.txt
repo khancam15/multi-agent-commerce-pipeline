@@ -1,7 +1,7 @@
 # Core AI / LLM
 anthropic==0.97.0
-crewai==1.14.2
-crewai-tools==1.14.2
+crewai==1.15.1
+crewai-tools==1.15.1
 
 # Image processing — Phase 4.1 resize mockups to 2000x2000 JPEG
 Pillow>=10.3.0
@@ -10,5 +10,5 @@ Pillow>=10.3.0
 requests>=2.32.0
 
 # Utilities
-python-dotenv==1.1.1
+python-dotenv==1.2.2
 rich==14.3.4

@@ -49,3 +49,6 @@ executor_state.json
 history_list.txt
 # Local database backups (copy off the server; never commit)
 backups/
+
+# Pause switch for the autonomous loop (./run.sh pause)
+PAUSE

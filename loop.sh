@@ -37,6 +37,13 @@
 #   logs/loop.log                — all stdout/stderr
 #   logs/loop_errors.log         — failures only
 #
+# Pause: ./run.sh pause   (or: touch PAUSE)  — every phase stops except buyer
+#        delivery, so paid orders still get their templates. ./run.sh resume
+#        removes the file. Takes effect at the next phase, no restart needed.
+#
+# Atlas: with ATLAS_FEED_URL and ATLAS_FEED_TOKEN in .env, each phase result is
+#        reported to AI Ops Atlas (scripts/atlas_feed.py). Optional.
+#
 # Stop: kill $(cat logs/loop.pid)  or Ctrl+C
 
 set -uo pipefail
@@ -54,6 +61,7 @@ LOG_DIR="$SCRIPT_DIR/logs"
 LOG_FILE="$LOG_DIR/loop.log"
 ERR_FILE="$LOG_DIR/loop_errors.log"
 PID_FILE="$LOG_DIR/loop.pid"
+PAUSE_FILE="$SCRIPT_DIR/PAUSE"
 SLEEP="${SLEEP:-3600}"
 # Buyers wait at most this long for their template email while the loop sleeps
 DELIVERY_INTERVAL="${DELIVERY_INTERVAL:-600}"
@@ -121,6 +129,14 @@ _err() {
     echo "$msg" >> "$ERR_FILE"
 }
 
+# True while the PAUSE file exists
+_paused() { [[ -f "$PAUSE_FILE" ]]; }
+
+# Report a phase result to AI Ops Atlas. Never fails the loop.
+_feed() {
+    "$PYTHON" scripts/atlas_feed.py "$@" >> "$LOG_FILE" 2>&1 || true
+}
+
 # Sleep for $1 seconds, waking every DELIVERY_INTERVAL to deliver new orders
 _sleep_with_delivery() {
     local remaining="$1" chunk
@@ -147,15 +163,23 @@ _sleep_or_exit() {
 _run_phase() {
     local label="$1"
     shift
+    # Buyers already paid, so delivery keeps running while the loop is paused
+    if _paused && [[ "$label" != "Order delivery" ]]; then
+        _log "Skipped $label — loop is paused (remove $PAUSE_FILE or ./run.sh resume)"
+        _feed skipped "$label" "Loop paused"
+        return 1
+    fi
     _log "Starting $label: $*"
     local code=0
     "$@" >> "$LOG_FILE" 2>&1 || code=$?
     if [[ $code -eq 0 ]]; then
         _log "$label completed OK"
         "$PYTHON" scripts/alerts.py ok "$label" >> "$LOG_FILE" 2>&1 || true
+        _feed ok "$label"
         return 0
     fi
     _err "$label FAILED (exit $code)"
+    _feed failed "$label" "Exit $code"
     "$PYTHON" scripts/alerts.py fail "$label" "Exit $code. Last log lines:
 $(tail -n 20 "$LOG_FILE")" >> "$LOG_FILE" 2>&1 || true
     return $code
@@ -165,6 +189,8 @@ $(tail -n 20 "$LOG_FILE")" >> "$LOG_FILE" 2>&1 || true
 _queue_failure() {
     local product="$1" reason="$2"
     local status
+    # A phase skipped by a pause is not a failed attempt
+    _paused && return 0
     status=$("$PYTHON" - "$product" "$reason" 2>>"$LOG_FILE" <<'PYEOF'
 import sys; sys.path.insert(0, 'scripts')
 from db import record_queue_failure
@@ -228,6 +254,14 @@ while true; do
     _run_phase "Order delivery" "$PYTHON" scripts/order_delivery.py \
         || _err "Order delivery had failures — will retry next cycle."
 
+    # ── Paused: deliver orders only ───────────────────────────────────────────
+    if _paused; then
+        _log "Loop is paused — only buyer delivery runs. Resume with ./run.sh resume"
+        _feed paused "Loop" "PAUSE file present; only buyer delivery runs"
+        _sleep_or_exit
+        continue
+    fi
+
     # ── Check weekly publish budget ───────────────────────────────────────────
     PUBLISHED_THIS_WEEK=$("$PYTHON" - 2>>"$LOG_FILE" <<'PYEOF'
 import sys; sys.path.insert(0, 'scripts')
@@ -250,7 +284,8 @@ PYEOF
         # SEO analysis + auto-apply on published listings
         # Processes up to 10 listings per maintain cycle (oldest-SEO-reviewed first)
         # to keep each cycle short while still improving the full catalogue over time.
-        "$PYTHON" - 2>>"$LOG_FILE" <<'PYEOF' || _err "Maintain SEO scan failed — non-fatal."
+        MAINTAIN_CODE=0
+        "$PYTHON" - 2>>"$LOG_FILE" <<'PYEOF' || MAINTAIN_CODE=$?
 import sys, subprocess
 sys.path.insert(0, 'scripts')
 from db import get_conn
@@ -280,6 +315,12 @@ for r in rows:
     except Exception as e:
         print(f"  [maintain] SEO scan failed for {r['product_name']}: {e}")
 PYEOF
+        if [[ $MAINTAIN_CODE -eq 0 ]]; then
+            _feed ok "Maintain SEO scan"
+        else
+            _err "Maintain SEO scan failed — non-fatal."
+            _feed failed "Maintain SEO scan" "Exit $MAINTAIN_CODE"
+        fi
 
         _run_phase "Storefront deploy" "$PYTHON" scripts/storefront.py deploy \
             || _err "Storefront deploy failed — non-fatal."

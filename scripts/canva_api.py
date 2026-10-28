@@ -205,7 +205,8 @@ class CanvaClient:
             "format":    format_payload,
         }
 
-        resp = self._request("POST", _EXPORT_URL, json=payload, timeout=30)
+        # A duplicate export job is harmless, so allow full retries
+        resp = self._request("POST", _EXPORT_URL, json=payload, timeout=30, _idempotent=True)
         if not resp.ok:
             raise CanvaAPIError(
                 f"Export request failed for {design_id} ({resp.status_code}): {resp.text[:300]}"
@@ -327,10 +328,12 @@ class CanvaClient:
 
         When a buyer clicks this link, Canva creates their own editable
         copy — they never touch the original. This is the standard
-        delivery mechanism for Canva templates sold on Shopify.
+        delivery mechanism for Canva templates sold through the store.
 
         Returns a canva.com URL string.
-        Falls back to a preview URL if the API endpoint is unavailable.
+        Raises CanvaAPIError if no template link could be created. There is
+        deliberately no fallback: a preview or edit URL of the original
+        design is not something a buyer can use, and may expose the original.
         """
         url  = f"{_BASE}/designs/{design_id}/links"
         resp = self._request(
@@ -338,6 +341,7 @@ class CanvaClient:
             url,
             json={"action": "use_template"},
             timeout=30,
+            _idempotent=True,  # an extra share link is harmless
         )
 
         if resp.ok:
@@ -350,9 +354,10 @@ class CanvaClient:
             if link_url:
                 return link_url
 
-        # Fallback: standard Canva shareable link
-        print("  [canva_api] Template link API unavailable — using share URL")
-        return f"https://www.canva.com/design/{design_id}/view?mode=preview"
+        raise CanvaAPIError(
+            f"Could not create a template link for design {design_id} "
+            f"({resp.status_code}): {resp.text[:200]}"
+        )
 
     # ── Convenience: export by URL ────────────────────────────────────────────
 

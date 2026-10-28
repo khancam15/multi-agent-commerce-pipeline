@@ -1,6 +1,6 @@
 # Multi-Agent Commerce Pipeline
 
-Autonomous pipeline for building digital products, generating Canva mockups and downloadable templates, publishing products to Shopify, syncing sales, and running post-publish SEO maintenance.
+Autonomous pipeline for building digital products, generating Canva mockups and downloadable templates, selling them through Stripe Payment Links on a free static storefront, syncing sales, and running post-publish SEO maintenance.
 
 ## Overview
 
@@ -8,7 +8,7 @@ Autonomous pipeline for building digital products, generating Canva mockups and 
 |---|---|
 | Agents | CrewAI agents running on Claude through the Anthropic API |
 | Design | Canva remote MCP server, called through the Anthropic API MCP connector, with a Canva Connect API fallback for exports |
-| Commerce | Shopify Admin API for product publishing, sales sync, and SEO updates |
+| Commerce | Stripe (products, Payment Links, Checkout) and a static storefront hosted free on GitHub Pages, Cloudflare Pages or Netlify |
 | Runtime | Python on a Linux VPS, managed by a systemd service |
 | Data | SQLite for run history and product state |
 | Quality | Automated tests, gitleaks secret scanning, and pip-audit dependency checks in GitHub Actions |
@@ -25,16 +25,38 @@ Phase 2   Product listing plan     -> outputs/master.txt
 Phase 3   Canva mockup images      -> 02_Products/<product>/Mockups/
 Phase 3B  Canva product/template   -> 03_Canva_Exports/<product>/meta.json
 Phase 4   Process, build, validate -> 04_Assets/ReadyToUpload/<product>/
-Phase 5   Publish to Shopify       -> Shopify Admin API
-Phase 6   SEO refresh              -> Shopify tags + SEO metafields
+Phase 5   Publish to Stripe        -> Stripe product + price (draft until approved)
+Delivery  Email template links     -> buyers of paid checkouts, every 10 minutes
+Phase 6   SEO refresh              -> listing tags + meta, storefront rebuilt
 Phase 7   Health dashboard         -> stdout/email-ready report
+Store     Storefront build/deploy  -> site/ pushed to your Pages branch
 ```
+
+## How buyers get the product
+
+The Canva "Use template" link is the product, so it never appears on the product page.
+
+1. Phase 3B creates the template link. If it cannot, the product is not published.
+2. Phase 5 creates the Stripe product and price as a **draft** and stores the link in SQLite.
+   Drafts have no payment link and are not on the storefront.
+3. Preview it with `./run.sh approve --preview "Product Name"` (opens as `site_preview/`),
+   then run `./run.sh approve "Product Name"`. That creates the Stripe Payment Link and
+   rebuilds and deploys the storefront.
+4. A buyer clicks **Buy now**, pays on Stripe's checkout page, and `order_delivery.py`
+   emails them their link from `EMAIL_FROM`. The loop checks for new payments every 10 minutes.
+
+## Costs
+
+Stripe has no monthly fee; it charges per successful payment (2.9% + 30¢ for US cards
+at the time of writing). GitHub Pages, Cloudflare Pages and Netlify host the storefront
+for free. Test everything first with a `sk_test_` key and card `4242 4242 4242 4242`;
+nothing is charged in test mode.
 
 ## Main Commands
 
 ```bash
 ./run.sh db-init
-./run.sh shopify-auth
+./run.sh stripe-auth
 ./run.sh canva-auth
 ./run.sh phase1
 ./run.sh phase2
@@ -45,6 +67,13 @@ Phase 7   Health dashboard         -> stdout/email-ready report
 ./run.sh phase6 "Product Name"
 ./run.sh phase7
 ./run.sh sales
+./run.sh approve "Product Name"     # make a reviewed draft live (--list shows drafts)
+./run.sh approve --preview "Name"   # build site_preview/ with the draft included
+./run.sh store-build                # rebuild the storefront in site/
+./run.sh store-deploy               # rebuild and push it to your Pages branch
+./run.sh deliver --dry-run          # show which buyers would be emailed
+./run.sh deliver                    # email template links for new paid checkouts
+./run.sh backup                     # copy pipeline.db to backups/
 ./run.sh full "Product Name"
 ```
 
@@ -75,18 +104,21 @@ cp .env.example .env
 ```text
 ANTHROPIC_API_KEY
 SERPER_API_KEY
-SHOPIFY_STORE_DOMAIN
-SHOPIFY_ACCESS_TOKEN
+STRIPE_SECRET_KEY
+STOREFRONT_BASE_URL
+STOREFRONT_GIT_REMOTE
+EMAIL_FROM
+EMAIL_SMTP_PASS
 CANVA_CLIENT_ID
 CANVA_CLIENT_SECRET
 CANVA_ACCESS_TOKEN
 CANVA_REFRESH_TOKEN
 ```
 
-4. Verify Shopify credentials.
+4. Save and verify your Stripe key.
 
 ```bash
-python scripts/shopify_setup.py
+python scripts/stripe_setup.py
 ```
 
 5. Initialize SQLite.
@@ -95,19 +127,34 @@ python scripts/shopify_setup.py
 python scripts/db.py
 ```
 
-## Shopify Requirements
+## Stripe Setup
 
-Create a custom Shopify app with Admin API access. Required scopes:
+1. Create a free Stripe account at stripe.com. You can use test mode before the account is verified.
+2. In the Dashboard, open **Developers → API keys** and copy the test secret key (`sk_test_...`).
+   A restricted key also works if it can write Products, Prices and Payment Links and read Checkout Sessions.
+3. Run `./run.sh stripe-auth` and paste the key. Switch to the live key (`sk_live_...`) when you are ready to sell.
 
-```text
-write_products
-read_products
-read_orders
-write_orders
-read_inventory
-```
+Phase 5 looks up the product by its queue ID before creating anything, and every create sends an
+idempotency key, so a retry never makes a duplicate. New products are drafts
+(or live straight away with `STORE_PUBLISH_STATUS=active`). A product that fails Phases 3B to 5
+three times is marked `failed` in the queue so it does not block the others.
 
-The uploader creates an active Shopify product, embeds mockup images, stores the product URL and product ID locally, and marks the queue row as published.
+## Storefront Hosting
+
+The storefront is plain HTML built from SQLite into `site/`: a home page, one page per live product
+with JSON-LD product data, `sitemap.xml` and `robots.txt`. `./run.sh store-deploy` pushes it as its own
+git repository to `STOREFRONT_GIT_BRANCH` (default `gh-pages`) of `STOREFRONT_GIT_REMOTE`.
+
+GitHub Pages (free):
+
+1. Create an empty public repo, e.g. `your-store`.
+2. On the VPS, make a deploy key: `ssh-keygen -t ed25519 -f ~/.ssh/store_deploy -N ""`, add the public key
+   under the repo's **Settings → Deploy keys** with write access, and point SSH at it for github.com.
+3. Set `STOREFRONT_GIT_REMOTE=git@github.com:you/your-store.git` and run `./run.sh store-deploy` once.
+4. In **Settings → Pages**, choose "Deploy from a branch" and pick `gh-pages`.
+5. Set `STOREFRONT_BASE_URL` to the Pages URL (or your own domain) so links, images and the sitemap are absolute.
+
+Cloudflare Pages or Netlify work the same way: connect them to the same repo and branch, with no build command.
 
 ## Database
 
@@ -117,22 +164,24 @@ Core tables:
 
 ```text
 queue       pending/designed/published product work
-listings    published Shopify products, including shopify_url and shopify_product_id
+listings    published products: Stripe product/price/payment link IDs, slug, template link
 run_log     phase status history
 seo_review  before/after SEO tag audit trail
-sales       Shopify order line-item revenue
+sales       Stripe checkout line-item revenue (actual Stripe fee when known)
+deliveries  template links emailed to buyers
 ```
 
 ## Services
 
-Install the Shopify systemd unit on the VPS:
+Install the systemd unit on the VPS. If the old `shopify-pipeline` service is installed,
+stop and remove it first:
 
 ```bash
-cp shopify-pipeline.service /etc/systemd/system/
+systemctl disable --now shopify-pipeline 2>/dev/null; rm -f /etc/systemd/system/shopify-pipeline.service
+cp commerce-pipeline.service /etc/systemd/system/
 systemctl daemon-reload
-systemctl enable shopify-pipeline
-systemctl start shopify-pipeline
-systemctl status shopify-pipeline
+systemctl enable --now commerce-pipeline
+systemctl status commerce-pipeline
 ```
 
 ## Verification

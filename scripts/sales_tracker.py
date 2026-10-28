@@ -1,39 +1,32 @@
 """
 sales_tracker.py — Daily sales & revenue sync
 ───────────────────────────────────────────────
-Pulls order data from the Shopify Admin REST API, maps each sale to a
-product name via the listings table, and stores everything in the
-SQLite `sales` table.
+Pulls paid Stripe Checkout Sessions (every Payment Link purchase is one),
+maps each line item to a product name via the listings table, and stores
+everything in the SQLite `sales` table.
+
+Net revenue uses the actual Stripe fee from each payment's balance
+transaction, split across line items by amount. When the fee is not
+available yet, it falls back to an estimate of 2.9% + 30¢.
 
 Run:
-    python scripts/sales_tracker.py          — sync new orders only
-    python scripts/sales_tracker.py --full   — re-fetch all orders (slow)
+    python scripts/sales_tracker.py          — sync new sales only
+    python scripts/sales_tracker.py --full   — re-fetch all sales (slow)
 
 Called by loop.sh once per day alongside the email digest.
 
-Shopify API used:
-    GET /admin/api/2024-01/orders.json
-    Fields: id, line_items (product_id, title, price, quantity),
-            total_price, total_discounts, created_at, financial_status
-
 Requires in .env:
-    SHOPIFY_STORE_DOMAIN   — e.g. your-store.myshopify.com
-    SHOPIFY_ACCESS_TOKEN   — Admin API access token (shpat_...)
+    STRIPE_SECRET_KEY — see stripe_common.py
 """
 
 from __future__ import annotations
 
-import os
 import sys
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
-from dotenv import dotenv_values, load_dotenv
-
-_ROOT = Path(__file__).resolve().parent.parent
-load_dotenv(_ROOT / ".env")
-ENV_PATH = _ROOT / ".env"
+from dotenv import load_dotenv
 
 sys.path.insert(0, str(Path(__file__).parent))
 from db import (
@@ -44,239 +37,108 @@ from db import (
     log_run,
     upsert_sale,
 )
-from api_retry import rget
+from stripe_common import StripeError, line_item_product_id, paid_checkout_sessions
 
-API_VERSION = os.getenv("SHOPIFY_API_VERSION", "2024-01")
-PAGE_SIZE   = 250  # Shopify max per page
+_ROOT = Path(__file__).resolve().parent.parent
+load_dotenv(_ROOT / ".env")
 
+FEE_EXPAND = "data.payment_intent.latest_charge.balance_transaction"
 
-# ── Credentials ───────────────────────────────────────────────────────────────
-
-def _load_creds() -> dict[str, str]:
-    return {k: v for k, v in dotenv_values(ENV_PATH).items() if v is not None}
-
-
-def _normalize_domain(domain: str) -> str:
-    return domain.strip().removeprefix("https://").removeprefix("http://").rstrip("/")
-
-
-def _api_base(domain: str) -> str:
-    domain = _normalize_domain(domain)
-    return f"https://{domain}/admin/api/{API_VERSION}"
-
-
-def _hdrs(access_token: str) -> dict[str, str]:
-    return {"X-Shopify-Access-Token": access_token}
-
-
-# ── Product ID → product name cache ───────────────────────────────────────────
 
 def _build_listing_map() -> dict[str, str]:
-    """
-    Build a map of Shopify product IDs and handles to local product names.
-    Orders provide product_id; handles are kept as a fallback for older rows.
-    """
-    mapping: dict[str, str] = {}
+    """Map Stripe product IDs to local product names."""
     with get_conn() as conn:
         rows = conn.execute(
-            """SELECT product_name, shopify_url, shopify_product_id
-               FROM listings
-               WHERE shopify_url IS NOT NULL OR shopify_product_id IS NOT NULL"""
+            "SELECT product_name, stripe_product_id FROM listings "
+            "WHERE COALESCE(stripe_product_id, '') != ''"
         ).fetchall()
-    for row in rows:
-        product_id = str(row["shopify_product_id"] or "").strip()
-        if product_id:
-            mapping[product_id] = row["product_name"]
-
-        url = row["shopify_url"] or ""
-        parts = url.rstrip("/").split("/")
-        for i, part in enumerate(parts):
-            if part == "products" and i + 1 < len(parts):
-                mapping[parts[i + 1]] = row["product_name"]
-                break
-    return mapping
+    return {row["stripe_product_id"]: row["product_name"] for row in rows}
 
 
-# ── Order parsing ─────────────────────────────────────────────────────────────
+def _session_fee(session: dict[str, Any]) -> float | None:
+    """Actual Stripe fee for the session's payment in major units, if known."""
+    intent = session.get("payment_intent")
+    if not isinstance(intent, dict):
+        return None
+    charge = intent.get("latest_charge")
+    if not isinstance(charge, dict):
+        return None
+    txn = charge.get("balance_transaction")
+    if not isinstance(txn, dict) or txn.get("fee") is None:
+        return None
+    return txn["fee"] / 100
 
-def _parse_order(order: dict[str, Any], listing_map: dict[str, str]) -> list[dict[str, Any]]:
-    """
-    Convert a raw Shopify order into a list of normalised sale dicts (one per line item).
-    Returns empty list if order is missing essential fields or not paid.
-    """
-    financial_status = order.get("financial_status", "")
-    if financial_status not in ("paid", "partially_paid"):
+
+def parse_session(session: dict[str, Any], listing_map: dict[str, str]) -> list[dict[str, Any]]:
+    """Convert a paid Checkout Session into one normalised sale dict per line item."""
+    session_id = str(session.get("id", ""))
+    if not session_id:
         return []
-
-    order_id = str(order.get("id", ""))
-    if not order_id:
-        return []
-
-    try:
-        sale_date = datetime.fromisoformat(
-            order["created_at"].replace("Z", "+00:00")
-        ).isoformat()
-    except (KeyError, ValueError, AttributeError):
-        sale_date = datetime.now(tz=timezone.utc).isoformat()
+    created = session.get("created")
+    sale_date = (
+        datetime.fromtimestamp(created, tz=UTC).isoformat() if created
+        else datetime.now(UTC).isoformat()
+    )
+    lines = (session.get("line_items") or {}).get("data", [])
+    session_total = sum(int(li.get("amount_total") or 0) for li in lines) / 100
+    actual_fee = _session_fee(session)
 
     sales: list[dict[str, Any]] = []
-    for item in order.get("line_items", []):
-        item_id    = str(item.get("id", ""))
-        product_id = str(item.get("product_id", ""))
-        title      = (item.get("title") or "")[:200]
-        quantity   = int(item.get("quantity", 1))
-        gross_unit = float(item.get("price", "0"))
-        total_gross = round(gross_unit * quantity, 2)
-
-        # Shopify fees: ~2.9% + $0.30 payment processing; no direct fee field in orders
-        # Approximate net as gross minus payment processing estimate
-        payment_fee = round(total_gross * 0.029 + 0.30, 2)
-        net_amount  = round(total_gross - payment_fee, 2)
-
-        transaction_id = f"shopify_{order_id}_{item_id}"
-        product_name   = listing_map.get(product_id, "")
-
-        currency = order.get("currency", "USD")
-
+    for line in lines:
+        gross = int(line.get("amount_total") or 0) / 100
+        if actual_fee is not None and session_total > 0:
+            fee = actual_fee * gross / session_total
+        else:
+            fee = gross * 0.029 + 0.30 / max(len(lines), 1)
+        product_id = line_item_product_id(line)
         sales.append({
-            "transaction_id": transaction_id,
+            "transaction_id": f"stripe_{session_id}_{line.get('id', product_id)}",
             "listing_id":     product_id,
-            "product_name":   product_name,
-            "title":          title,
-            "gross_amount":   total_gross,
-            "amount":         net_amount,
-            "quantity":       quantity,
-            "currency":       currency,
+            "product_name":   listing_map.get(product_id, ""),
+            "title":          (line.get("description") or "")[:200],
+            "gross_amount":   round(gross, 2),
+            "amount":         round(gross - fee, 2),
+            "quantity":       int(line.get("quantity") or 1),
+            "currency":       (session.get("currency") or "usd").upper(),
             "sale_date":      sale_date,
         })
-
     return sales
 
 
-# ── Fetch orders ──────────────────────────────────────────────────────────────
-
-def _fetch_orders(
-    domain: str,
-    access_token: str,
-    created_at_min: str | None = None,
-    page_info: str | None = None,
-) -> tuple[list[dict[str, Any]], str | None]:
-    """
-    Fetch one page of orders from the Shopify API.
-    Returns (orders, next_page_info) — next_page_info is None on the last page.
-    Shopify uses cursor-based pagination via Link header.
-    """
-    params: dict[str, Any] = {
-        "status":  "any",
-        "limit":   PAGE_SIZE,
-        "fields":  "id,line_items,total_price,currency,financial_status,created_at",
-    }
-    if created_at_min:
-        params["created_at_min"] = created_at_min
-    if page_info:
-        params = {"page_info": page_info, "limit": PAGE_SIZE}
-
-    resp = rget(
-        f"{_api_base(domain)}/orders.json",
-        headers=_hdrs(access_token),
-        params=params,
-        timeout=30,
-        _label="Shopify orders",
-    )
-    resp.raise_for_status()
-
-    orders = resp.json().get("orders", [])
-
-    # Parse cursor for next page from Link header
-    next_page_info: str | None = None
-    link_header = resp.headers.get("Link", "")
-    if 'rel="next"' in link_header:
-        for part in link_header.split(","):
-            if 'rel="next"' in part:
-                # Extract page_info from URL: <url?page_info=xyz>; rel="next"
-                url_part = part.split(";")[0].strip().strip("<>")
-                for param in url_part.split("?")[-1].split("&"):
-                    if param.startswith("page_info="):
-                        next_page_info = param.split("=", 1)[1]
-                        break
-
-    return orders, next_page_info
-
-
-# ── Main sync ─────────────────────────────────────────────────────────────────
-
 def sync_sales(full: bool = False) -> dict[str, Any]:
-    """
-    Sync Shopify orders to the local sales table.
-
-    Args:
-        full: If True, re-fetch all orders (ignores last sync date).
-
-    Returns:
-        Summary dict with new_sales, total_revenue_7d, etc.
-    """
+    """Sync paid Stripe checkouts to the local sales table."""
     init_db()
-
-    creds = _load_creds()
-    domain       = _normalize_domain(creds.get("SHOPIFY_STORE_DOMAIN", ""))
-    access_token = creds.get("SHOPIFY_ACCESS_TOKEN", "")
-
-    if not domain or not access_token:
-        raise RuntimeError(
-            "SHOPIFY_STORE_DOMAIN and SHOPIFY_ACCESS_TOKEN not set in .env — "
-            "run: python scripts/shopify_setup.py"
-        )
-
     listing_map = _build_listing_map()
     print(f"  [sales] Listing map: {len(listing_map)} products")
 
-    created_at_min: str | None = None
-    if not full:
-        last_date = get_latest_sale_date()
-        if last_date:
-            created_at_min = last_date
-            print(f"  [sales] Incremental sync from: {last_date[:10]}")
-    if full or created_at_min is None:
-        print(f"  [sales] Full sync — fetching all orders")
+    since = datetime(2020, 1, 1, tzinfo=UTC)
+    last_date = None if full else get_latest_sale_date()
+    if last_date:
+        # Overlap one day: upsert_sale skips rows already stored
+        since = datetime.fromisoformat(last_date).astimezone(UTC) - timedelta(days=1)
+        print(f"  [sales] Incremental sync from: {since.date()}")
+    else:
+        print("  [sales] Full sync — fetching all paid checkouts")
 
-    new_count  = 0
-    page_info: str | None = None
-
-    while True:
-        orders, next_page_info = _fetch_orders(
-            domain, access_token,
-            created_at_min=created_at_min if not page_info else None,
-            page_info=page_info,
-        )
-        if not orders:
-            break
-
-        for order in orders:
-            for sale in _parse_order(order, listing_map):
-                inserted = upsert_sale(**sale)
-                if inserted:
-                    new_count += 1
-
-        if not next_page_info:
-            break
-        page_info = next_page_info
+    new_count = 0
+    for session in paid_checkout_sessions(since, expand=[FEE_EXPAND]):
+        for sale in parse_session(session, listing_map):
+            if upsert_sale(**sale):
+                new_count += 1
 
     summary = get_sales_summary(days=7)
     summary["new_transactions"] = new_count
 
-    print(f"  [sales] ✓ Synced {new_count} new order(s)")
-    print(f"  [sales] Last 7 days: {summary['order_count']} orders | "
-          f"${summary['total_revenue']:.2f} net | "
-          f"${summary['gross_revenue']:.2f} gross")
+    print(f"  [sales] ✓ Synced {new_count} new sale(s)")
+    print(f"  [sales] Last 7 days: {summary['order_count']} sales | "
+          f"${summary['total_revenue']:.2f} net | ${summary['gross_revenue']:.2f} gross")
     if summary["best_product"]:
         print(f"  [sales] Best product: {summary['best_product']} "
               f"(${summary['best_product_revenue']:.2f})")
     print(f"  [sales] All-time revenue: ${summary['all_time_revenue']:.2f}")
 
     log_run(
-        "pipeline",
-        "sales_tracker",
-        "success",
+        "pipeline", "sales_tracker", "success",
         f"new={new_count}, 7d_revenue=${summary['total_revenue']:.2f}, "
         f"7d_orders={summary['order_count']}",
     )
@@ -284,11 +146,10 @@ def sync_sales(full: bool = False) -> dict[str, Any]:
 
 
 if __name__ == "__main__":
-    full_sync = "--full" in sys.argv
     try:
-        result = sync_sales(full=full_sync)
+        sync_sales(full="--full" in sys.argv)
         sys.exit(0)
-    except RuntimeError as e:
+    except StripeError as e:
         print(f"[error] {e}")
         sys.exit(1)
     except Exception as e:

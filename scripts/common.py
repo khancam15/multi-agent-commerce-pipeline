@@ -1,5 +1,5 @@
 """
-Shared helpers for Shopify pipeline scripts.
+Shared helpers for the commerce pipeline scripts.
 """
 
 from __future__ import annotations
@@ -8,6 +8,7 @@ import json
 import random
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
 
@@ -22,7 +23,7 @@ def load_brand_guide(brand_guides: tuple[Path, ...]) -> str:
     fallback_file = brand_guides[1] if len(brand_guides) > 1 else brand_guides[0]
     raise FileNotFoundError(
         f"Brand guide not found at {preferred_file.resolve()} or {fallback_file.resolve()}\n"
-        "Run shopify_brand_crew.py first to generate it."
+        "Run brand_crew.py first to generate it."
     )
 
 
@@ -86,6 +87,23 @@ def extract_checklist(brand_guide: str) -> dict[str, list[dict[str, Any]]]:
         )
 
     return checklist
+
+
+def brand_guide_changed(state: dict[str, Any], brand_guide_mtime: float) -> bool:
+    """
+    True if the brand guide was regenerated after this run state was created.
+    Phase 2 then starts a fresh run, so a new brand guide produces new products
+    instead of resuming a checklist that is already complete.
+    """
+    saved = state.get("brand_guide_mtime")
+    if saved is not None:
+        return float(saved) != float(brand_guide_mtime)
+    # Older state files have no mtime: compare against when the run started
+    started = state.get("started_at", "")
+    try:
+        return datetime.fromisoformat(started).timestamp() < brand_guide_mtime
+    except ValueError:
+        return True
 
 
 def save_state(state_file: Path, state: dict[str, Any]) -> None:

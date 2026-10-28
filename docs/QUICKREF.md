@@ -37,7 +37,7 @@ price = validate_price(9.99, min_price=0.99, max_price=999.99)
 ```python
 from config import settings
 
-domain = settings.shopify_store_domain
+key = settings.stripe_secret_key
 limit = settings.weekly_publish_limit
 retries = settings.max_retries
 ```

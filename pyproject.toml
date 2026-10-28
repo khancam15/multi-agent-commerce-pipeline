@@ -1,7 +1,7 @@
 [project]
 name = "multi-agent-commerce-pipeline"
 version = "0.1.0"
-description = "AI-powered Shopify digital product launch pipeline"
+description = "AI-powered digital product pipeline: Canva templates sold through Stripe and a static storefront"
 requires-python = ">=3.11"
 dependencies = [
   "anthropic",

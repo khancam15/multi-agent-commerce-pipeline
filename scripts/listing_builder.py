@@ -2,7 +2,7 @@
 listing_builder.py  —  Phase 4.2
 ──────────────────────────────────
 Reads a queue row from SQLite and formats all fields into a structured
-JSON payload that shopify_uploader.py and the validator consume downstream.
+JSON payload that stripe_publisher.py and the validator consume downstream.
 
 Run:
     python scripts/listing_builder.py <product_name>   — uses newest pending row
@@ -15,6 +15,7 @@ Output:
 from __future__ import annotations
 
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -23,6 +24,20 @@ from db import get_conn, log_run
 _ROOT       = Path(__file__).resolve().parent.parent
 ASSETS_DIR  = _ROOT / "04_Assets" / "ReadyToUpload"
 INBOX_DIR   = _ROOT / "03_Canva_Exports"
+
+
+# Older Phase 3B runs appended the template link to the queue description.
+# The link must never reach the public product page, so strip that block and
+# any stray Canva design links before building the payload.
+_TEMPLATE_BLOCK_RE = re.compile(r"\s*─+\s*\n\s*✦ HOW TO ACCESS YOUR TEMPLATE.*\Z", re.DOTALL)
+_CANVA_LINK_RE     = re.compile(r"https?://(?:www\.)?canva\.com/\S+")
+
+
+def strip_template_links(description: str) -> str:
+    """Remove any template delivery block or Canva link from a public description."""
+    cleaned = _TEMPLATE_BLOCK_RE.sub("", description or "")
+    cleaned = _CANVA_LINK_RE.sub("", cleaned)
+    return cleaned.rstrip()
 
 
 def _load_product_extras(product_name: str) -> dict:
@@ -69,12 +84,14 @@ def build_listing_payload(queue_id: int) -> dict:
     # Pull in Phase 3B extras (template link + PDF path)
     extras = _load_product_extras(product_name)
     if extras["template_link"]:
-        print(f"  [4.2] Template link found — embedding in payload")
+        print("  [4.2] Template link found — stored for post-purchase delivery")
+    else:
+        print("  [4.2] Warning: no template link yet — Phase 5 will not publish this product")
     if extras["product_pdf"]:
         print(f"  [4.2] Product PDF found: {Path(extras['product_pdf']).name}")
 
-    # Use description from queue row (Phase 3B already injected the template link there)
-    description = row["description"]
+    # The public description never carries the template link; buyers get it by email
+    description = strip_template_links(row["description"])
 
     payload = {
         "queue_id":      queue_id,
@@ -84,8 +101,8 @@ def build_listing_payload(queue_id: int) -> dict:
         "description":   description,
         "price":         row["price"],
         "category":      row["category"],
-        "template_link": extras["template_link"],
-        "digital_file":  extras["product_pdf"],   # Canva PDF path (attached to order confirmation)
+        "template_link": extras["template_link"],  # private: delivered after payment
+        "digital_file":  extras["product_pdf"],    # local PDF backup of the product
     }
 
     out_dir = ASSETS_DIR / product_name

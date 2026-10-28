@@ -1,8 +1,8 @@
 """
 pre_upload_validator.py  —  Phase 4.3
 ───────────────────────────────────────
-Validates a listing payload and its mockup images against Shopify's rules
-before handing off to shopify_uploader. If validation fails, writes the
+Validates a listing payload and its mockup images against the store's rules
+before handing off to stripe_publisher. If validation fails, writes the
 error to run_log and halts the run cleanly.
 
 Run:
@@ -23,7 +23,7 @@ from db import log_run
 _ROOT      = Path(__file__).resolve().parent.parent
 ASSETS_DIR = _ROOT / "04_Assets" / "ReadyToUpload"
 
-# Shopify limits
+# Store limits
 TITLE_MAX_CHARS    = 255
 TAG_COUNT_MIN      = 1
 TAG_COUNT_MAX      = 250
@@ -48,7 +48,7 @@ def validate(product_name: str) -> ValidationResult:
     """
     Validates listing.json and mockup images for a product.
 
-    Checks (Shopify rules):
+    Checks (store rules):
       - Title ≤ 255 characters
       - 1–250 tags, each ≤ 255 characters
       - Description present (≥ 10 characters)
@@ -105,7 +105,7 @@ def validate(product_name: str) -> ValidationResult:
         result.fail(f"price is not a valid number: {payload.get('price')!r}")
         price = 0.0
     if not (PRICE_MIN <= price <= PRICE_MAX):
-        result.fail(f"Price ${price} outside Shopify range (${PRICE_MIN}\u2013${PRICE_MAX})")
+        result.fail(f"Price ${price} outside the allowed range (${PRICE_MIN}\u2013${PRICE_MAX})")
 
     # Images — look in Mockups/ or the product ReadyToUpload dir
     mockups_dir  = _ROOT / "02_Products" / product_name / "Mockups"

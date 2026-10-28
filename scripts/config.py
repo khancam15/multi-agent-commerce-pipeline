@@ -8,7 +8,7 @@ Replaces scattered hardcoded values with typed, validated settings.
 Usage:
     from config import settings
 
-    print(settings.shopify_store_domain)
+    print(settings.stripe_secret_key)
     print(settings.weekly_publish_limit)
     print(settings.max_retries)
 
@@ -53,11 +53,11 @@ class Settings:
         self.anthropic_api_key: str = os.getenv("ANTHROPIC_API_KEY", "")
         self.serper_api_key: str = os.getenv("SERPER_API_KEY", "")
 
-        # ── Shopify ───────────────────────────────────────────────────────────
-        self.shopify_store_domain: str = os.getenv("SHOPIFY_STORE_DOMAIN", "")
-        self.shopify_access_token: str = os.getenv("SHOPIFY_ACCESS_TOKEN", "")
-        self.shopify_api_version: str = os.getenv("SHOPIFY_API_VERSION", "2024-01")
-        self.shopify_vendor: str = os.getenv("SHOPIFY_VENDOR", os.getenv("BRAND_NAME", "Your Brand"))
+        # ── Stripe + storefront ───────────────────────────────────────────────
+        self.stripe_secret_key: str = os.getenv("STRIPE_SECRET_KEY", "")
+        self.store_currency: str = os.getenv("STORE_CURRENCY", "usd")
+        self.storefront_base_url: str = os.getenv("STOREFRONT_BASE_URL", "")
+        self.brand_name: str = os.getenv("BRAND_NAME", "Your Brand")
 
         # ── Canva ─────────────────────────────────────────────────────────────
         self.canva_client_id: str = os.getenv("CANVA_CLIENT_ID", "")
@@ -115,10 +115,8 @@ class Settings:
         # Required API keys
         if not self.anthropic_api_key:
             errors.append("ANTHROPIC_API_KEY is required")
-        if not self.shopify_store_domain:
-            errors.append("SHOPIFY_STORE_DOMAIN is required")
-        if not self.shopify_access_token:
-            errors.append("SHOPIFY_ACCESS_TOKEN is required")
+        if not self.stripe_secret_key:
+            errors.append("STRIPE_SECRET_KEY is required")
 
         # Validate numeric ranges
         if not (1 <= self.weekly_publish_limit <= 100):
@@ -146,9 +144,9 @@ class Settings:
         print("=" * 60)
         print("Configuration Summary")
         print("=" * 60)
-        print(f"Shopify Store:        {self.shopify_store_domain}")
-        print(f"Shopify API Version:  {self.shopify_api_version}")
-        print(f"Shopify Vendor:       {self.shopify_vendor}")
+        print(f"Brand:                {self.brand_name}")
+        print(f"Storefront URL:       {self.storefront_base_url or '<not set>'}")
+        print(f"Currency:             {self.store_currency}")
         print(f"Weekly Publish Limit: {self.weekly_publish_limit}")
         print(f"Publish Cooldown:     {self.publish_cooldown_hours}h")
         print(f"Max Retries:          {self.max_retries}")
@@ -159,7 +157,7 @@ class Settings:
         print("API Keys:")
         print(f"  Anthropic:          {mask(self.anthropic_api_key)}")
         print(f"  Serper:             {mask(self.serper_api_key)}")
-        print(f"  Shopify Token:      {mask(self.shopify_access_token)}")
+        print(f"  Stripe Key:         {mask(self.stripe_secret_key)}")
         print(f"  Canva Access:       {mask(self.canva_access_token)}")
         print("=" * 60)
 

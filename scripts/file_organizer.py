@@ -2,7 +2,7 @@
 file_organizer.py  —  Phase 4.5
 ──────────────────────────────────
 Moves validated files (listing.json + mockup images) into
-04_Assets/ReadyToUpload/[ProductName]/ so shopify_uploader has a
+04_Assets/ReadyToUpload/[ProductName]/ so stripe_publisher has a
 single clean source directory to read from.
 
 Run:

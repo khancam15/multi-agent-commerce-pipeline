@@ -6,7 +6,7 @@ crewai-tools==1.14.2
 # Image processing — Phase 4.1 resize mockups to 2000x2000 JPEG
 Pillow>=10.3.0
 
-# HTTP — API calls (Shopify, Canva Connect, Anthropic)
+# HTTP — API calls (Stripe, Canva Connect, Anthropic)
 requests>=2.32.0
 
 # Utilities

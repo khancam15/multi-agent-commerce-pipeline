@@ -1,8 +1,8 @@
 """
-shopify_brand_crew.py  —  Phase 1: Brand Builder
+brand_crew.py  —  Phase 1: Brand Builder
 ──────────────────────────────────────────────
 Run:
-    python scripts/shopify_brand_crew.py
+    python scripts/brand_crew.py
     ./run.sh phase1                      # VPS shortcut
 
 Requires:
@@ -41,7 +41,7 @@ output is passed as context to the agents that follow it.
   Step 5 — copy_strategist (task_copy)
     Receives Steps 2–3.
     Writes tagline, 9-bullet tone guide, keyword-first title formula, 5-section
-    listing description template, 13 Shopify SEO tags, and review request message.
+    listing description template, 13 SEO tags, and review request message.
     Produces: brand copy and SEO document (6 sections).
 
   Step 6 — launch_planner (task_launch)
@@ -84,10 +84,10 @@ _require_env("SERPER_API_KEY")
 OUTPUT_DIR = Path("outputs")
 OUTPUT_DIR.mkdir(exist_ok=True)
 
-MODEL = "claude-haiku-4-5"   # fastest / most cost-efficient for agentic loops
+MODEL = os.getenv("PHASE1_MODEL", "claude-haiku-4-5")   # fast and cost-efficient for agentic loops
 
 # ─── TOOLS ───────────────────────────────────────────────────────────────────
-# SerperDevTool fires a real Google/Shopify search on every agent tool call.
+# SerperDevTool fires a real Google search on every agent tool call.
 # n_results=5 keeps token usage predictable and reduces API round-trips.
 search = SerperDevTool(n_results=5)
 
@@ -95,14 +95,14 @@ search = SerperDevTool(n_results=5)
 # ─── AGENTS ──────────────────────────────────────────────────────────────────
 
 niche_scout = Agent(
-    role="Shopify Niche Scout",
+    role="Digital Product Niche Scout",
     goal=(
-        "Identify the single highest-opportunity Shopify niche for a new digital "
+        "Identify the single highest-opportunity niche for a new digital "
         "product store by analyzing market size, competition level, buyer intent, "
         "and profit potential. Deliver one specific, actionable niche statement."
     ),
     backstory=(
-        "You have evaluated thousands of Shopify categories and know exactly which "
+        "You have evaluated thousands of digital product categories (Etsy, Google Shopping, Creative Market) and know exactly which "
         "niches are oversaturated, which are emerging, and which have durable "
         "demand. You combine search trend data with review volume proxies to "
         "surface niches where a new seller can realistically reach $1k/month "
@@ -116,9 +116,9 @@ niche_scout = Agent(
 )
 
 market_analyst = Agent(
-    role="Shopify Market Research Analyst",
+    role="Digital Product Market Research Analyst",
     goal=(
-        "Gather and synthesize live data on top-selling Shopify stores in the niche, "
+        "Gather and synthesize live data on top-selling digital product shops in the niche, "
         "dominant visual styles, price points, buyer language in reviews, "
         "keyword volume, and whitespace opportunities."
     ),
@@ -164,7 +164,7 @@ visual_director = Agent(
     backstory=(
         "You have directed brand identities for dozens of e-commerce businesses. "
         "You know that color is emotional, typography is personality, and logo "
-        "recognition at 500×500 pixels is a non-negotiable constraint on Shopify. "
+        "recognition at 500×500 pixels is a non-negotiable constraint in search results. "
         "You base every visual decision on what the market research says buyers respond to."
     ),
     tools=[],           # works from brand_strategist context — no live search needed
@@ -178,12 +178,12 @@ copy_strategist = Agent(
     role="Brand Copywriter and SEO Strategist",
     goal=(
         "Produce the full brand voice system: tagline, tone guide, a product title "
-        "formula, a listing description template, 13 Shopify SEO tags, and a "
+        "formula, a listing description template, 13 SEO tags, and a "
         "review request message. All copy must reflect the brand tone adjectives "
-        "and be optimized for Shopify search."
+        "and be optimized for Google search."
     ),
     backstory=(
-        "You write copy that converts browsers into buyers. You understand Shopify's "
+        "You write copy that converts browsers into buyers. You understand search engines' "
         "algorithm rewards keyword-first titles and relevant long-tail tags. "
         "You write the way the target buyer thinks, not the way the seller thinks."
     ),
@@ -204,7 +204,7 @@ launch_planner = Agent(
     ),
     backstory=(
         "You are the operator who turns strategy into execution. You have launched "
-        "over fifty Shopify digital product stores. You know what separates a store "
+        "over fifty digital product stores. You know what separates a store "
         "that makes its first sale in week one from one that sits dormant for months."
     ),
     tools=[],
@@ -218,7 +218,7 @@ launch_planner = Agent(
 
 task_niche = Task(
     description="""
-    Search Shopify and current trend data to identify the single best niche for a
+    Search marketplaces (Etsy, Google Shopping) and current trend data to identify the single best niche for a
     new digital product store launching today.
 
     Evaluate niches across these dimensions:
@@ -249,7 +249,7 @@ task_research = Task(
     The niche to research has been chosen by the Niche Scout in the previous task.
     Use that CHOSEN NICHE as the subject of all research below.
 
-    Conduct live market research on Shopify for that niche.
+    Conduct live market research (Etsy, Google Shopping, independent shops) for that niche.
 
     Search for:
     1. Top 5 best-selling stores in this niche — note their store names, estimated
@@ -257,7 +257,7 @@ task_research = Task(
        description, and price points.
     2. The most common buyer complaints and praises in reviews (what buyers love
        and what they wish was different).
-    3. Top 10 search keywords buyers use to find these products on Shopify.
+    3. Top 10 search keywords buyers use to find these products on Google.
     4. At least 2 underserved sub-niches or positioning gaps competitors are missing.
     5. Dominant color palettes and aesthetic styles in the top stores' thumbnails.
 
@@ -275,12 +275,12 @@ task_research = Task(
 task_strategy = Task(
     description="""
     Using the market research report and the CHOSEN NICHE from the Niche Scout,
-    define the store foundation for a new Shopify digital product store in that niche.
+    define the store foundation for a new independent digital product store in that niche.
 
     Deliver:
     1. Refined niche statement (one sentence, ultra-specific)
     2. Target buyer persona (name them, describe their job, problem, and goal)
-    3. Three store name options with reasoning (check Shopify availability mentally)
+    3. Three store name options with reasoning (check domain availability mentally)
     4. Recommended store name with justification
     5. One-sentence brand positioning statement (who, what, outcome)
     6. Three brand tone adjectives with one-line definitions each
@@ -297,8 +297,8 @@ task_strategy = Task(
 )
 
 task_visual = Task(
-    description=f"""
-    Design the complete visual identity system for the Shopify store defined
+    description="""
+    Design the complete visual identity system for the store defined
     in the brand strategy document.
 
     Deliver:
@@ -326,22 +326,22 @@ task_visual = Task(
 )
 
 task_copy = Task(
-    description=f"""
-    Write the complete brand voice and SEO system for the Shopify store.
+    description="""
+    Write the complete brand voice and SEO system for the store.
 
     Deliver:
     1. Tagline: one punchy sentence (10 words max) that captures positioning.
     2. Tone guide: a 3-bullet do/don't for each tone adjective (9 bullets total).
     3. Product title formula: a fill-in-the-blank template using keyword-first
-       structure Shopify rewards (e.g. "[Primary Keyword] | [Benefit] — [Format]").
+       structure search engines reward (e.g. "[Primary Keyword] | [Benefit] — [Format]").
     4. Listing description template: a 5-section structure with placeholder copy
        showing exactly what goes in each section and why.
-    5. 13 Shopify SEO tags: drawn directly from the top keywords and buyer language
+    5. 13 SEO tags: drawn directly from the top keywords and buyer language
        in the research, one tag per line.
     6. Review request message: 3–4 sentences, warm tone, non-pushy, sent after
        successful download delivery.
 
-    Every word should sound like the brand's tone adjectives, not generic Shopify copy.
+    Every word should sound like the brand's tone adjectives, not generic marketplace copy.
     """,
     expected_output=(
         "A brand copy and SEO document with six sections: "
@@ -353,7 +353,7 @@ task_copy = Task(
 )
 
 task_launch = Task(
-    description=f"""
+    description="""
     Compile all previous deliverables — market research, brand strategy,
     visual identity, and copy system — into a single complete brand guide.
 
@@ -365,7 +365,7 @@ task_launch = Task(
     - Week 4: Optimization (review analytics, refine tags, respond to all messages)
 
     For each week, include 5–7 specific actions and name at least one free tool
-    to use (Canva, Pinterest Trends, Shopify Rank, etc.).
+    to use (Canva, Pinterest Trends, Google Trends, etc.).
 
     Write the entire brand guide to outputs/brand_guide.md
 
@@ -414,15 +414,15 @@ brand_crew = Crew(
 
 if __name__ == "__main__":
     print(f"\n{'─'*60}")
-    print(f"  Shopify Brand Builder Crew")
-    print(f"  Niche: AI-selected by Niche Scout agent")
+    print("  Brand Builder Crew")
+    print("  Niche: AI-selected by Niche Scout agent")
     print(f"{'─'*60}\n")
 
     try:
         result = brand_crew.kickoff()
-        log_run("brand_builder", "shopify_brand_crew", "success", "brand_guide.md written")
+        log_run("brand_builder", "brand_crew", "success", "brand_guide.md written")
     except Exception as exc:
-        log_run("brand_builder", "shopify_brand_crew", "failed", str(exc))
+        log_run("brand_builder", "brand_crew", "failed", str(exc))
         raise
 
     print(f"\n{'─'*60}")

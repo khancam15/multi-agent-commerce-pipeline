@@ -1,7 +1,7 @@
 """
 image_processor.py  —  Phase 4.1
 ──────────────────────────────────
-Renames mockups to Shopify naming convention, resizes to 2000×2000 px,
+Renames mockups to the storefront naming convention, resizes to 2000×2000 px,
 and converts to JPEG. Called by n8n Execute Command node after Canva
 exports files to 02_Products/[ProductName]/Mockups/.
 
@@ -25,8 +25,8 @@ TARGET_SIZE  = (2000, 2000)
 JPEG_QUALITY = 92
 
 
-def _shopify_filename(product_name: str, index: int) -> str:
-    """Return Shopify-safe filename: lowercase, hyphens, 1-indexed."""
+def _store_filename(product_name: str, index: int) -> str:
+    """Return a URL-safe filename: lowercase, hyphens, 1-indexed."""
     slug = product_name.lower().replace(" ", "-")
     return f"{slug}-mockup-{index:02d}.jpg"
 
@@ -40,10 +40,10 @@ def process_mockups(product_name: str) -> list[Path]:
       1. Locate source images (PNG, JPG, JPEG, WEBP) in Mockups/
       2. Sort by filename for consistent 01–05 numbering
       3. Open each image with Pillow
-      4. Resize to 2000×2000 using LANCZOS — preserves detail at Shopify's
+      4. Resize to 2000×2000 using LANCZOS — preserves detail at the storefront's
          thumbnail scale without upscaling artifacts
-      5. Convert to RGB (strips alpha channel; Shopify rejects RGBA JPEGs)
-      6. Save as JPEG at quality=92 — good visual quality under Shopify's
+      5. Convert to RGB (strips alpha channel; JPEG has no alpha channel)
+      6. Save as JPEG at quality=92 — good visual quality under typical web
          500 KB per-image limit
       7. Remove the original source file to keep the folder clean
     """
@@ -63,7 +63,7 @@ def process_mockups(product_name: str) -> list[Path]:
     output_paths: list[Path] = []
 
     for i, src in enumerate(source_images, start=1):
-        out_name = _shopify_filename(product_name, i)
+        out_name = _store_filename(product_name, i)
         out_path = mockups_dir / out_name
 
         with Image.open(src) as img:

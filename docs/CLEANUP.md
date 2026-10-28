@@ -1,5 +1,8 @@
 # Code Cleanup Summary
 
+> Historical note (2026-10): the pipeline has since moved from Shopify to Stripe and a static
+> storefront. `shopify_*` scripts below were renamed or replaced; see the README for current names.
+
 ## 🗑️ Scripts Removed
 
 ### Unused/Obsolete Scripts

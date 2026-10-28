@@ -1,0 +1,28 @@
+[Unit]
+Description=Multi-Agent Commerce Pipeline - autonomous loop
+After=network-online.target
+Wants=network-online.target
+# Give up after 5 crashes in 10 minutes instead of restarting forever
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+# Runs as root to match the documented /root install. To run as a dedicated
+# user (recommended), create one, move the repo to its home, and update
+# User=, WorkingDirectory=, ExecStart= and the log paths below.
+User=root
+WorkingDirectory=/root/multi-agent-commerce-pipeline
+ExecStart=/root/multi-agent-commerce-pipeline/loop.sh
+Restart=on-failure
+RestartSec=60
+# loop.sh exits 78 on configuration errors (bad credentials, missing .env).
+# Retrying cannot fix those, so stop and wait for a manual restart.
+RestartPreventExitStatus=78
+NoNewPrivileges=true
+PrivateTmp=true
+StandardOutput=append:/root/multi-agent-commerce-pipeline/logs/loop.log
+StandardError=append:/root/multi-agent-commerce-pipeline/logs/loop_errors.log
+
+[Install]
+WantedBy=multi-user.target

@@ -23,6 +23,10 @@ outputs/*
 !outputs/.gitkeep
 *.log
 
+# Built storefront (deployed to its own branch/repo)
+site/
+site_preview/
+
 # Loop logs (keep directory skeleton in git)
 logs/*
 !logs/.gitkeep
@@ -43,3 +47,5 @@ history_list.txt
 scripts/__pycache__/
 executor_state.json
 history_list.txt
+# Local database backups (copy off the server; never commit)
+backups/

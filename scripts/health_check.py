@@ -4,7 +4,7 @@ health_check.py — System health check and monitoring endpoint
 ──────────────────────────────────────────────────────────────
 Validates that all critical components are working:
   • Database connectivity
-  • Shopify API access
+  • Stripe API access
   • Canva API access
   • Anthropic API key format
   • File system permissions
@@ -149,60 +149,55 @@ def check_database() -> HealthCheckResult:
         )
 
 
-def check_shopify_api() -> HealthCheckResult:
-    """Check Shopify API connectivity."""
+def check_stripe_api() -> HealthCheckResult:
+    """Check Stripe API connectivity with the configured secret key."""
     start = time.time()
 
-    if not settings.shopify_store_domain or not settings.shopify_access_token:
+    if not settings.stripe_secret_key:
         return HealthCheckResult(
-            name="shopify_api",
+            name="stripe_api",
             status="fail",
-            message="Shopify credentials not configured",
+            message="STRIPE_SECRET_KEY not configured",
             latency_ms=0,
         )
 
     try:
-        domain = settings.shopify_store_domain.strip().removeprefix("https://").removeprefix("http://").rstrip("/")
-        url = f"https://{domain}/admin/api/{settings.shopify_api_version}/shop.json"
-
         resp = rget(
-            url,
-            headers={"X-Shopify-Access-Token": settings.shopify_access_token},
+            "https://api.stripe.com/v1/products",
+            headers={"Authorization": f"Bearer {settings.stripe_secret_key}"},
+            params={"limit": 1},
             timeout=10,
             _label="Health check",
         )
-
         latency = (time.time() - start) * 1000
 
         if resp.status_code == 200:
-            shop = resp.json().get("shop", {})
-            shop_name = shop.get("name", domain)
+            mode = "test" if settings.stripe_secret_key.startswith(("sk_test_", "rk_test_")) else "live"
             return HealthCheckResult(
-                name="shopify_api",
+                name="stripe_api",
                 status="pass",
-                message=f"Shopify API reachable ({shop_name})",
+                message=f"Stripe API reachable ({mode} mode)",
                 latency_ms=latency,
             )
-        elif resp.status_code == 401:
+        if resp.status_code in (401, 403):
             return HealthCheckResult(
-                name="shopify_api",
+                name="stripe_api",
                 status="fail",
-                message="Shopify authentication failed (invalid token)",
+                message=f"Stripe key rejected ({resp.status_code})",
                 latency_ms=latency,
             )
-        else:
-            return HealthCheckResult(
-                name="shopify_api",
-                status="warn",
-                message=f"Shopify API returned {resp.status_code}",
-                latency_ms=latency,
-            )
+        return HealthCheckResult(
+            name="stripe_api",
+            status="warn",
+            message=f"Stripe API returned {resp.status_code}",
+            latency_ms=latency,
+        )
 
     except Exception as e:
         return HealthCheckResult(
-            name="shopify_api",
+            name="stripe_api",
             status="fail",
-            message=f"Shopify API error: {str(e)[:100]}",
+            message=f"Stripe API error: {str(e)[:100]}",
             latency_ms=(time.time() - start) * 1000,
         )
 
@@ -435,7 +430,7 @@ def run_health_checks(*, quick: bool = False) -> HealthReport:
 
     # Skip API calls if quick mode
     if not quick:
-        checks.append(check_shopify_api())
+        checks.append(check_stripe_api())
         checks.append(check_canva_api())
 
     # Determine overall status
@@ -553,7 +548,7 @@ def serve_health_endpoint(port: int = 8080) -> None:
 def main() -> int:
     import argparse
 
-    parser = argparse.ArgumentParser(description="Health check for Shopify pipeline")
+    parser = argparse.ArgumentParser(description="Health check for the commerce pipeline")
     parser.add_argument("--quick", action="store_true", help="Skip API calls (faster)")
     parser.add_argument("--json", action="store_true", help="Output JSON")
     parser.add_argument("--serve", action="store_true", help="Run as web server")

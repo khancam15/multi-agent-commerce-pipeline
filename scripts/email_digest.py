@@ -93,7 +93,7 @@ def _get_stats() -> dict:
 
     with get_conn() as conn:
         stats["published_week"] = conn.execute(
-            "SELECT COUNT(*) FROM run_log WHERE status='success' AND phase='shopify_uploader' AND run_at >= ?",
+            "SELECT COUNT(*) FROM run_log WHERE status='success' AND phase IN ('shopify_uploader', 'stripe_publisher') AND run_at >= ?",
             (week_start,)
         ).fetchone()[0]
 
@@ -118,7 +118,7 @@ def _get_stats() -> dict:
 def _build_email(brand: dict, products: list[dict], stats: dict, sales: dict, weekly_limit: int = 5) -> tuple[str, str]:
     """Return (subject, html_body)."""
     date_str = _utc_now().strftime("%B %d, %Y")
-    subject  = f"Shopify Pipeline — Design Brief for {date_str}"
+    subject  = f"Commerce Pipeline — Design Brief for {date_str}"
 
     store    = brand.get("store_name", "Your Store")
     tagline  = brand.get("tagline", "")
@@ -207,7 +207,7 @@ def _build_email(brand: dict, products: list[dict], stats: dict, sales: dict, we
     <li>Phase 3 designs 6 mockup images per product (Canva MCP)</li>
     <li>Phase 3B creates the actual template buyers download (Canva MCP)</li>
     <li>Phase 4 processes images and builds the listing</li>
-    <li>Phase 5 publishes to Shopify automatically (up to {weekly_limit}/week)</li>
+    <li>Phase 5 saves products to Stripe as drafts (up to {weekly_limit}/week)</li>
     <li>Phase 6 runs SEO gap analysis after each publish</li>
   </ul>
   <p style="font-size:13px;color:#888;">
@@ -217,7 +217,7 @@ def _build_email(brand: dict, products: list[dict], stats: dict, sales: dict, we
 
   <hr style="border:none;border-top:1px solid #eee;margin:32px 0;">
   <p style="color:#aaa;font-size:11px;text-align:center;">
-    AI Shopify Pipeline · {date_str} · Auto-generated
+    Commerce Pipeline · {date_str} · Auto-generated
   </p>
 
 </body>

@@ -12,11 +12,15 @@ What it does:
      template (media kit, rate card, pitch deck, etc.)
   3. Gets a "Use template" share link via Canva Connect API
      → buyers click this and get their own editable Canva copy
-  4. Exports a PDF version via Canva Connect API
-     → embedded in the Shopify product description as a download link
+  4. Exports a PDF version via Canva Connect API (local backup copy)
   5. Saves template_link + pdf_path to meta.json + a _product.json record
-     → Phase 4 (listing_builder) embeds the link in the description
-     → Phase 5 (shopify_uploader) publishes the listing with the link
+     → Phase 4 (listing_builder) carries the link in listing.json
+     → Phase 5 (shopify_uploader) stores it with the listing, never in the
+       public description
+     → order_delivery.py emails it to each buyer after payment
+
+Exits 1 if no template link could be created, so the product is never
+published without something to deliver.
 
 Run:
     python scripts/canva_product_creator.py "Product Name" [--price 9.99]
@@ -39,7 +43,6 @@ import os
 import re
 import sys
 import time
-from datetime import timezone
 from pathlib import Path
 from typing import Any, cast
 
@@ -70,7 +73,7 @@ BRAND_GUIDE  = OUTPUTS_DIR / "brand_guide.md"
 
 ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 CANVA_MCP_URL = "https://mcp.canva.com/mcp"
-MODEL         = "claude-opus-4-5"
+MODEL         = os.getenv("CANVA_MODEL", "claude-opus-4-5")
 
 
 # ── Product archetypes → page structure ───────────────────────────────────────
@@ -360,10 +363,12 @@ def _parse_design_url(text: str) -> str:
 def _export_and_link(design_url: str, product_name: str) -> tuple[str, str]:
     """
     Given a Canva design URL:
-      1. Get a "Use template" share link (for listing description)
-      2. Export as PDF (for Shopify digital download file)
+      1. Get a "Use template" share link (sent to buyers after payment)
+      2. Export as PDF (kept locally as a backup copy of the product)
 
     Returns (template_link, pdf_path) — either may be empty string on failure.
+    The raw design URL is never used as a template link: it points at the
+    original design, which buyers either cannot open or could edit.
     """
     template_link = ""
     pdf_path      = ""
@@ -372,21 +377,27 @@ def _export_and_link(design_url: str, product_name: str) -> tuple[str, str]:
         return template_link, pdf_path
 
     if not os.getenv("CANVA_ACCESS_TOKEN"):
-        print("  [3B] CANVA_ACCESS_TOKEN not set — skipping Connect API steps")
-        template_link = design_url  # use raw design URL as fallback
+        print("  [3B] CANVA_ACCESS_TOKEN not set — cannot create a template link")
         return template_link, pdf_path
 
     try:
         client    = CanvaClient()
         design_id = CanvaClient.design_id_from_url(design_url)
+    except CanvaAPIError as exc:
+        print(f"  [3B] Canva API setup failed: {exc}")
+        return template_link, pdf_path
 
-        # 1. Template share link
-        print(f"  [3B] Getting 'Use template' share link...")
+    # 1. Template share link
+    try:
+        print("  [3B] Getting 'Use template' share link...")
         template_link = client.get_template_link(design_id)
-        print(f"  [3B] Template link: {template_link[:70]}...")
+        print("  [3B] Template link created")
+    except CanvaAPIError as exc:
+        print(f"  [3B] Template link failed: {exc}")
 
-        # 2. PDF export
-        print(f"  [3B] Exporting PDF via Connect API...")
+    # 2. PDF export
+    try:
+        print("  [3B] Exporting PDF via Connect API...")
         pdf_urls = client.export_design(design_id, fmt="pdf")
         if pdf_urls:
             product_dir = PRODUCTS_DIR / product_name / "Product"
@@ -400,36 +411,19 @@ def _export_and_link(design_url: str, product_name: str) -> tuple[str, str]:
             size_kb  = len(r.content) // 1024
             print(f"  [3B] PDF saved: template.pdf ({size_kb} KB)")
         else:
-            print(f"  [3B] PDF export returned no URLs — skipping")
-
-    except CanvaAPIError as exc:
-        print(f"  [3B] Canva API step failed: {exc}")
-        template_link = template_link or design_url
+            print("  [3B] PDF export returned no URLs — skipping")
+    except (CanvaAPIError, requests.RequestException) as exc:
+        print(f"  [3B] PDF export failed: {exc}")
 
     return template_link, pdf_path
-
-
-_TEMPLATE_BLURB = """
-
-──────────────────────────────────────
-✦ HOW TO ACCESS YOUR TEMPLATE
-──────────────────────────────────────
-After purchase, you'll receive this link to your free editable Canva copy:
-{link}
-
-No Canva account required to get started — Canva is free to use.
-Edit on any device in minutes."""
 
 
 def _update_meta(product_name: str, template_link: str, pdf_path: str) -> None:
     """
     Add template_link and product_pdf to meta.json so listing_builder
-    can read the extras. Also updates the SQLite queue row description
-    so the template link actually reaches the Shopify product.
+    can read them. The link is stored for post-purchase delivery only
+    (order_delivery.py) and is never added to the public description.
     """
-    link_blurb = _TEMPLATE_BLURB.format(link=template_link) if template_link else ""
-
-    # ── 1. Update meta.json ───────────────────────────────────────────────────
     meta_file = INBOX_DIR / product_name / "meta.json"
     if meta_file.exists():
         meta = json.loads(meta_file.read_text(encoding="utf-8"))
@@ -437,37 +431,10 @@ def _update_meta(product_name: str, template_link: str, pdf_path: str) -> None:
             meta["template_link"] = template_link
         if pdf_path:
             meta["product_pdf"] = pdf_path
-        if link_blurb and link_blurb not in meta.get("description", ""):
-            meta["description"] = (meta.get("description", "") + link_blurb)[:10000]
         meta_file.write_text(json.dumps(meta, indent=2, ensure_ascii=False), encoding="utf-8")
-        print(f"  [3B] meta.json updated with template_link")
+        print("  [3B] meta.json updated with template_link")
     else:
-        print(f"  [3B] meta.json not found — skipping meta update")
-
-    # ── 2. Also patch the SQLite queue row description ────────────────────────
-    # listing_builder.py reads description from the queue row, not meta.json,
-    # so we must update the queue row here or the template link never reaches Shopify.
-    if not template_link:
-        return
-    try:
-        from datetime import datetime
-        from db import get_conn
-        with get_conn() as conn:
-            row = conn.execute(
-                "SELECT id, description FROM queue "
-                "WHERE product_name = ? AND status = 'pending' "
-                "ORDER BY id DESC LIMIT 1",
-                (product_name,),
-            ).fetchone()
-            if row and link_blurb not in (row["description"] or ""):
-                new_desc = ((row["description"] or "") + link_blurb)[:10000]
-                conn.execute(
-                    "UPDATE queue SET description = ?, updated_at = ? WHERE id = ?",
-                    (new_desc, datetime.now(timezone.utc).isoformat(), row["id"]),
-                )
-                print(f"  [3B] Queue row description updated with template link")
-    except Exception as exc:
-        print(f"  [3B] WARNING: Could not update queue description: {exc}")
+        print("  [3B] meta.json not found — skipping meta update")
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -483,7 +450,7 @@ def create_product(product_name: str, price: float | None = None) -> int:
 
     Returns 0 on success, 1 on failure.
     """
-    print(f"\n  [3B] ── Product Creator ──────────────────────────────")
+    print("\n  [3B] ── Product Creator ──────────────────────────────")
     print(f"  [3B] Product: {product_name}")
 
     # Resolve price
@@ -562,6 +529,15 @@ def create_product(product_name: str, price: float | None = None) -> int:
     rec_path = OUTPUTS_DIR / f"{safe}_product.json"
     rec_path.write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")
     print(f"  [3B] Record saved → {rec_path}")
+
+    if not template_link:
+        print(
+            "  [3B] ERROR: No template link — the product cannot be delivered to buyers. "
+            "Phase 5 will not publish it until Phase 3B succeeds."
+        )
+        log_run(product_name, "canva_product_creator", "failed",
+                f"Design created ({design_url}) but no template link could be created")
+        return 1
 
     status_parts: list[str] = []
     if template_link:

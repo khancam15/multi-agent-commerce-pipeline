@@ -63,110 +63,110 @@ _require_product() {
 case "$PHASE" in
     db-init)
         echo "[run.sh] Initialising database"
-        "$PYTHON" scripts/db.py
+        "$PYTHON" scripts/scoped_env.py scripts/db.py
         ;;
     preflight|check)
         echo "[run.sh] Running pre-flight credential check"
-        "$PYTHON" scripts/preflight.py
+        "$PYTHON" scripts/scoped_env.py scripts/preflight.py
         ;;
     digest)
         echo "[run.sh] Sending email digest now"
-        "$PYTHON" scripts/email_digest.py
+        "$PYTHON" scripts/scoped_env.py scripts/email_digest.py
         ;;
     sales)
         echo "[run.sh] Syncing sales & revenue from Stripe"
-        "$PYTHON" scripts/sales_tracker.py ${2:+$2}
+        "$PYTHON" scripts/scoped_env.py scripts/sales_tracker.py ${2:+$2}
         ;;
     phase1)
         echo "[run.sh] Starting Phase 1 — Brand Builder"
-        "$PYTHON" scripts/brand_crew.py
+        "$PYTHON" scripts/scoped_env.py scripts/brand_crew.py
         ;;
     phase2)
         echo "[run.sh] Starting Phase 2 — Launch Executor"
-        "$PYTHON" scripts/listing_generator.py
+        "$PYTHON" scripts/scoped_env.py scripts/listing_generator.py
         ;;
     phase2-rich)
         echo "[run.sh] Starting Phase 2 (rich) — Autonomous Executor"
-        "$PYTHON" scripts/listing_generator.py
+        "$PYTHON" scripts/scoped_env.py scripts/listing_generator.py
         ;;
     phase3|design)
         _require_product
         echo "[run.sh] Phase 3 — Canva Image Generator: $PRODUCT"
-        "$PYTHON" scripts/canva_image_generator.py "$PRODUCT" ${3:+--price "$3"}
+        "$PYTHON" scripts/scoped_env.py scripts/canva_image_generator.py "$PRODUCT" ${3:+--price "$3"}
         ;;
     phase3b|product)
         _require_product
         echo "[run.sh] Phase 3B — Canva Product Creator: $PRODUCT"
-        "$PYTHON" scripts/canva_product_creator.py "$PRODUCT" ${3:+--price "$3"}
+        "$PYTHON" scripts/scoped_env.py scripts/canva_product_creator.py "$PRODUCT" ${3:+--price "$3"}
         ;;
     phase4)
         _require_product
         echo "[run.sh] Phase 4 — Process images, build listing, validate, stage: $PRODUCT"
-        "$PYTHON" scripts/image_processor.py "$PRODUCT"
-        "$PYTHON" scripts/listing_builder.py "$PRODUCT"
-        "$PYTHON" scripts/pre_upload_validator.py "$PRODUCT"
-        "$PYTHON" scripts/file_organizer.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/image_processor.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/listing_builder.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/pre_upload_validator.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/file_organizer.py "$PRODUCT"
         ;;
     canva-auth)
         echo "[run.sh] Starting Canva API OAuth setup (💻 HOST only)"
-        "$PYTHON" scripts/canva_oauth.py
+        "$PYTHON" scripts/scoped_env.py scripts/canva_oauth.py
         ;;
     stripe-auth)
         echo "[run.sh] Checking Stripe setup"
-        "$PYTHON" scripts/stripe_setup.py
+        "$PYTHON" scripts/scoped_env.py scripts/stripe_setup.py
         ;;
     phase5)
         _require_product
         echo "[run.sh] Phase 5 — Create Stripe product: $PRODUCT"
-        "$PYTHON" scripts/stripe_publisher.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/stripe_publisher.py "$PRODUCT"
         ;;
     phase6)
         _require_product
         echo "[run.sh] Phase 6 — SEO analysis + storefront tags: $PRODUCT"
-        "$PYTHON" scripts/seo_analyzer.py "$PRODUCT"
-        "$PYTHON" scripts/storefront.py build
+        "$PYTHON" scripts/scoped_env.py scripts/seo_analyzer.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/storefront.py build
         ;;
     phase7)
         echo "[run.sh] Phase 7 — Health dashboard"
-        "$PYTHON" scripts/health_dashboard.py
+        "$PYTHON" scripts/scoped_env.py scripts/health_dashboard.py
         ;;
     approve)
         echo "[run.sh] Approving draft product"
-        "$PYTHON" scripts/approve_listing.py "${@:2}"
+        "$PYTHON" scripts/scoped_env.py scripts/approve_listing.py "${@:2}"
         ;;
     deliver)
         echo "[run.sh] Delivering template links to buyers"
-        "$PYTHON" scripts/order_delivery.py ${2:+"$2"}
+        "$PYTHON" scripts/scoped_env.py scripts/order_delivery.py ${2:+"$2"}
         ;;
     store-build)
         echo "[run.sh] Building storefront"
-        "$PYTHON" scripts/storefront.py build
+        "$PYTHON" scripts/scoped_env.py scripts/storefront.py build
         ;;
     store-deploy)
         echo "[run.sh] Building and deploying storefront"
-        "$PYTHON" scripts/storefront.py deploy
+        "$PYTHON" scripts/scoped_env.py scripts/storefront.py deploy
         ;;
     backup)
         echo "[run.sh] Backing up database"
-        "$PYTHON" scripts/backup_db.py
+        "$PYTHON" scripts/scoped_env.py scripts/backup_db.py
         ;;
     all)
         echo "[run.sh] Running full pipeline: Phase 1 → Phase 2"
-        "$PYTHON" scripts/brand_crew.py
-        "$PYTHON" scripts/listing_generator.py
+        "$PYTHON" scripts/scoped_env.py scripts/brand_crew.py
+        "$PYTHON" scripts/scoped_env.py scripts/listing_generator.py
         ;;
     full)
         _require_product
         echo "[run.sh] Full autonomous pipeline: Phase 3 → 3B → 4 → 5 → 6 for: $PRODUCT"
-        "$PYTHON" scripts/canva_image_generator.py "$PRODUCT" ${3:+--price "$3"}
-        "$PYTHON" scripts/canva_product_creator.py "$PRODUCT" ${3:+--price "$3"}
-        "$PYTHON" scripts/image_processor.py "$PRODUCT"
-        "$PYTHON" scripts/listing_builder.py "$PRODUCT"
-        "$PYTHON" scripts/pre_upload_validator.py "$PRODUCT"
-        "$PYTHON" scripts/file_organizer.py "$PRODUCT"
-        "$PYTHON" scripts/stripe_publisher.py "$PRODUCT"
-        "$PYTHON" scripts/seo_analyzer.py "$PRODUCT" || true
-        "$PYTHON" scripts/storefront.py deploy || true
+        "$PYTHON" scripts/scoped_env.py scripts/canva_image_generator.py "$PRODUCT" ${3:+--price "$3"}
+        "$PYTHON" scripts/scoped_env.py scripts/canva_product_creator.py "$PRODUCT" ${3:+--price "$3"}
+        "$PYTHON" scripts/scoped_env.py scripts/image_processor.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/listing_builder.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/pre_upload_validator.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/file_organizer.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/stripe_publisher.py "$PRODUCT"
+        "$PYTHON" scripts/scoped_env.py scripts/seo_analyzer.py "$PRODUCT" || true
+        "$PYTHON" scripts/scoped_env.py scripts/storefront.py deploy || true
         ;;
     pause)
         touch "$SCRIPT_DIR/PAUSE"

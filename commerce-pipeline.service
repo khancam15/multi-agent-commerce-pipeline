@@ -9,8 +9,9 @@ StartLimitBurst=5
 [Service]
 Type=simple
 # Runs as root to match the documented /root install. To run as a dedicated
-# user (recommended), create one, move the repo to its home, and update
-# User=, WorkingDirectory=, ExecStart= and the log paths below.
+# user (recommended), follow docs/least-privilege.md, which moves the repo to
+# /home/commerce and updates User=, WorkingDirectory=, ExecStart= and the log
+# paths below.
 User=root
 WorkingDirectory=/root/multi-agent-commerce-pipeline
 ExecStart=/root/multi-agent-commerce-pipeline/loop.sh

@@ -41,7 +41,7 @@ no browser automation and no shell execution driven by model output.
 | Vulnerable dependencies | pip-audit in CI; core AI packages pinned. |
 
 ## Residual risks
-- The loop runs as root in the documented setup. A dedicated user limits the damage of any compromise.
+- The loop runs as root in the documented setup. A dedicated user limits the damage of any compromise. Steps: [least-privilege.md](least-privilege.md). Per-script secret scoping (`AGENT_ENV_SCOPING=true`) keeps the Stripe key and Gmail password out of the model-driven phases.
 - Backups stay on the same VPS until they are copied elsewhere.
 - Delivery depends on SMTP. If email fails, the buyer has paid and waits until the next successful run.
 - A buyer can forward their template link. Canva links cannot be limited to one person.

@@ -101,14 +101,14 @@ echo $$ > "$PID_FILE"
 # Validates Stripe, Canva, and Anthropic credentials before doing any real work.
 # Exits the loop immediately if Stripe credentials are broken (non-recoverable).
 PREFLIGHT_CODE=0
-"$PYTHON" scripts/preflight.py || PREFLIGHT_CODE=$?
+"$PYTHON" scripts/scoped_env.py scripts/preflight.py || PREFLIGHT_CODE=$?
 if [[ $PREFLIGHT_CODE -eq 75 ]]; then
     echo "[loop] Pre-flight could not reach the APIs (network) — exiting so systemd retries later." >&2
     exit 75
 fi
 if [[ $PREFLIGHT_CODE -ne 0 ]]; then
     echo "[loop] Pre-flight failed — fix credentials and restart. Exiting." >&2
-    "$PYTHON" scripts/alerts.py send "Pre-flight failed — loop stopped" \
+    "$PYTHON" scripts/scoped_env.py scripts/alerts.py send "Pre-flight failed — loop stopped" \
         "Fix the credentials reported in logs/loop.log, then: systemctl restart commerce-pipeline"
     exit "$EX_CONFIG"
 fi
@@ -134,7 +134,7 @@ _paused() { [[ -f "$PAUSE_FILE" ]]; }
 
 # Report a phase result to AI Ops Atlas. Never fails the loop.
 _feed() {
-    "$PYTHON" scripts/atlas_feed.py "$@" >> "$LOG_FILE" 2>&1 || true
+    "$PYTHON" scripts/scoped_env.py scripts/atlas_feed.py "$@" >> "$LOG_FILE" 2>&1 || true
 }
 
 # Sleep for $1 seconds, waking every DELIVERY_INTERVAL to deliver new orders
@@ -145,7 +145,7 @@ _sleep_with_delivery() {
         sleep "$chunk"
         remaining=$(( remaining - chunk ))
         if (( remaining > 0 )); then
-            _run_phase "Order delivery" "$PYTHON" scripts/order_delivery.py \
+            _run_phase "Order delivery" "$PYTHON" scripts/scoped_env.py scripts/order_delivery.py \
                 || _err "Order delivery had failures — will retry."
         fi
     done
@@ -174,13 +174,13 @@ _run_phase() {
     "$@" >> "$LOG_FILE" 2>&1 || code=$?
     if [[ $code -eq 0 ]]; then
         _log "$label completed OK"
-        "$PYTHON" scripts/alerts.py ok "$label" >> "$LOG_FILE" 2>&1 || true
+        "$PYTHON" scripts/scoped_env.py scripts/alerts.py ok "$label" >> "$LOG_FILE" 2>&1 || true
         _feed ok "$label"
         return 0
     fi
     _err "$label FAILED (exit $code)"
     _feed failed "$label" "Exit $code"
-    "$PYTHON" scripts/alerts.py fail "$label" "Exit $code. Last log lines:
+    "$PYTHON" scripts/scoped_env.py scripts/alerts.py fail "$label" "Exit $code. Last log lines:
 $(tail -n 20 "$LOG_FILE")" >> "$LOG_FILE" 2>&1 || true
     return $code
 }
@@ -199,7 +199,7 @@ PYEOF
 )
     if [[ "$status" == "failed" ]]; then
         _err "Product '$product' failed 3 times — marked failed and skipped. See run_log for details."
-        "$PYTHON" scripts/alerts.py send "Product skipped: $product" \
+        "$PYTHON" scripts/scoped_env.py scripts/alerts.py send "Product skipped: $product" \
             "It failed 3 publish attempts ($reason). Fix the cause, then set its queue row back to pending." \
             >> "$LOG_FILE" 2>&1 || true
     fi
@@ -241,17 +241,17 @@ while true; do
     # ── Daily tasks (run once per calendar day) ───────────────────────────────
     TODAY=$(date -u '+%Y-%m-%d')
     if [[ "$TODAY" != "$LAST_DIGEST_DATE" ]]; then
-        _run_phase "Sales sync"   "$PYTHON" scripts/sales_tracker.py \
+        _run_phase "Sales sync"   "$PYTHON" scripts/scoped_env.py scripts/sales_tracker.py \
             || _err "Sales sync failed — non-fatal."
-        _run_phase "Email digest" "$PYTHON" scripts/email_digest.py \
+        _run_phase "Email digest" "$PYTHON" scripts/scoped_env.py scripts/email_digest.py \
             || _err "Email digest failed — non-fatal."
-        _run_phase "Database backup" "$PYTHON" scripts/backup_db.py \
+        _run_phase "Database backup" "$PYTHON" scripts/scoped_env.py scripts/backup_db.py \
             || _err "Database backup failed — non-fatal."
         LAST_DIGEST_DATE="$TODAY"
     fi
 
     # ── Every cycle: send template links to buyers of new paid orders ─────────
-    _run_phase "Order delivery" "$PYTHON" scripts/order_delivery.py \
+    _run_phase "Order delivery" "$PYTHON" scripts/scoped_env.py scripts/order_delivery.py \
         || _err "Order delivery had failures — will retry next cycle."
 
     # ── Paused: deliver orders only ───────────────────────────────────────────
@@ -306,7 +306,7 @@ with get_conn() as c:
 for r in rows:
     try:
         result = subprocess.run(
-            [sys.executable, 'scripts/seo_analyzer.py', r['product_name']],
+            [sys.executable, 'scripts/scoped_env.py', 'scripts/seo_analyzer.py', r['product_name']],
             capture_output=True, text=True, timeout=120
         )
         if result.stdout: print(result.stdout.strip())
@@ -322,10 +322,10 @@ PYEOF
             _feed failed "Maintain SEO scan" "Exit $MAINTAIN_CODE"
         fi
 
-        _run_phase "Storefront deploy" "$PYTHON" scripts/storefront.py deploy \
+        _run_phase "Storefront deploy" "$PYTHON" scripts/scoped_env.py scripts/storefront.py deploy \
             || _err "Storefront deploy failed — non-fatal."
 
-        _run_phase "Phase 7 (health dashboard)" "$PYTHON" scripts/health_dashboard.py \
+        _run_phase "Phase 7 (health dashboard)" "$PYTHON" scripts/scoped_env.py scripts/health_dashboard.py \
             || _err "Phase 7 failed — non-fatal."
 
         # Sleep until Monday 00:00 UTC (weekly counter resets)
@@ -351,7 +351,7 @@ PYEOF
     # Phase 1: Brand Builder — runs once every 7 days
     BRAND_AGE=$(_file_age_secs "$SCRIPT_DIR/outputs/brand_guide.md")
     if [[ "$BRAND_AGE" -gt "$WEEK_LIMIT_SECS" ]]; then
-        _run_phase "Phase 1 (brand builder)" "$PYTHON" scripts/brand_crew.py \
+        _run_phase "Phase 1 (brand builder)" "$PYTHON" scripts/scoped_env.py scripts/brand_crew.py \
             || { _log "Cycle $CYCLE aborted at phase 1."; _sleep_or_exit; continue; }
     else
         _log "Phase 1 skipped — brand_guide.md is $((BRAND_AGE / 3600))h old (refreshes after 168h)"
@@ -360,7 +360,7 @@ PYEOF
     # Phase 2: Listing content — runs once every 7 days (same cadence as brand)
     MASTER_AGE=$(_file_age_secs "$SCRIPT_DIR/outputs/master.txt")
     if [[ "$MASTER_AGE" -gt "$WEEK_LIMIT_SECS" ]]; then
-        _run_phase "Phase 2 (listing generator)" "$PYTHON" scripts/listing_generator.py \
+        _run_phase "Phase 2 (listing generator)" "$PYTHON" scripts/scoped_env.py scripts/listing_generator.py \
             || { _log "Cycle $CYCLE aborted at phase 2."; _sleep_or_exit; continue; }
     else
         _log "Phase 2 skipped — master.txt is $((MASTER_AGE / 3600))h old (refreshes after 168h)"
@@ -390,7 +390,7 @@ PYEOF
     if [[ -n "$DESIGN_PRODUCT" ]]; then
         _log "Phase 3 — designing mockups: $DESIGN_PRODUCT"
         _run_phase "Phase 3 (canva image generator)" \
-            "$PYTHON" scripts/canva_image_generator.py "$DESIGN_PRODUCT" \
+            "$PYTHON" scripts/scoped_env.py scripts/canva_image_generator.py "$DESIGN_PRODUCT" \
             || _err "Phase 3 failed for: $DESIGN_PRODUCT — non-fatal, will retry next cycle."
 
         # Phase 3B: create the actual digital product (template) for the same product
@@ -399,7 +399,7 @@ PYEOF
         if [[ ! -f "$PRODUCT_RECORD" ]]; then
             _log "Phase 3B — creating digital product template: $DESIGN_PRODUCT"
             _run_phase "Phase 3B (canva product creator)" \
-                "$PYTHON" scripts/canva_product_creator.py "$DESIGN_PRODUCT" \
+                "$PYTHON" scripts/scoped_env.py scripts/canva_product_creator.py "$DESIGN_PRODUCT" \
                 || _err "Phase 3B failed for: $DESIGN_PRODUCT — will retry before publishing; it will not publish without a template link."
         else
             _log "Phase 3B skipped — product template already exists for: $DESIGN_PRODUCT"
@@ -447,37 +447,37 @@ PYEOF
     # Phase 3B retry: a product needs a template link before it can be sold
     if [[ ! -f "$SCRIPT_DIR/outputs/${PRODUCT// /_}_product.json" ]]; then
         _run_phase "Phase 3B retry (canva product creator)" \
-            "$PYTHON" scripts/canva_product_creator.py "$PRODUCT" \
+            "$PYTHON" scripts/scoped_env.py scripts/canva_product_creator.py "$PRODUCT" \
             || { _queue_failure "$PRODUCT" "phase 3B: no template link"; _log "Cycle $CYCLE aborted at phase 3B."; _sleep_or_exit; continue; }
     fi
 
     # Phase 4: Process + Stage
-    _run_phase "Phase 4.1 (image processor)"  "$PYTHON" scripts/image_processor.py      "$PRODUCT" \
+    _run_phase "Phase 4.1 (image processor)"  "$PYTHON" scripts/scoped_env.py scripts/image_processor.py      "$PRODUCT" \
         || { _queue_failure "$PRODUCT" "phase 4.1"; _log "Cycle $CYCLE aborted at phase 4.1."; _sleep_or_exit; continue; }
 
-    _run_phase "Phase 4.2 (listing builder)"  "$PYTHON" scripts/listing_builder.py      "$PRODUCT" \
+    _run_phase "Phase 4.2 (listing builder)"  "$PYTHON" scripts/scoped_env.py scripts/listing_builder.py      "$PRODUCT" \
         || { _queue_failure "$PRODUCT" "phase 4.2"; _log "Cycle $CYCLE aborted at phase 4.2."; _sleep_or_exit; continue; }
 
-    _run_phase "Phase 4.3 (validator)"        "$PYTHON" scripts/pre_upload_validator.py  "$PRODUCT" \
+    _run_phase "Phase 4.3 (validator)"        "$PYTHON" scripts/scoped_env.py scripts/pre_upload_validator.py  "$PRODUCT" \
         || { _queue_failure "$PRODUCT" "phase 4.3 validation"; _log "Cycle $CYCLE aborted at phase 4.3 — validation failed."; _sleep_or_exit; continue; }
 
-    _run_phase "Phase 4.5 (file organizer)"   "$PYTHON" scripts/file_organizer.py       "$PRODUCT" \
+    _run_phase "Phase 4.5 (file organizer)"   "$PYTHON" scripts/scoped_env.py scripts/file_organizer.py       "$PRODUCT" \
         || { _queue_failure "$PRODUCT" "phase 4.5"; _log "Cycle $CYCLE aborted at phase 4.5."; _sleep_or_exit; continue; }
 
     # Phase 5: Create the Stripe product (draft unless STORE_PUBLISH_STATUS=active)
-    _run_phase "Phase 5 (stripe publisher)"   "$PYTHON" scripts/stripe_publisher.py     "$PRODUCT" \
+    _run_phase "Phase 5 (stripe publisher)"   "$PYTHON" scripts/scoped_env.py scripts/stripe_publisher.py     "$PRODUCT" \
         || { _queue_failure "$PRODUCT" "phase 5 upload"; _log "Cycle $CYCLE aborted at phase 5."; _sleep_or_exit; continue; }
 
     # Phase 6: SEO analysis on the new listing (non-fatal)
-    _run_phase "Phase 6 (seo analyzer)"       "$PYTHON" scripts/seo_analyzer.py         "$PRODUCT" \
+    _run_phase "Phase 6 (seo analyzer)"       "$PYTHON" scripts/scoped_env.py scripts/seo_analyzer.py         "$PRODUCT" \
         || _err "Phase 6 failed — listing is saved, SEO skipped."
 
     # Rebuild and deploy the storefront (shows approved products only)
-    _run_phase "Storefront deploy" "$PYTHON" scripts/storefront.py deploy \
+    _run_phase "Storefront deploy" "$PYTHON" scripts/scoped_env.py scripts/storefront.py deploy \
         || _err "Storefront deploy failed — non-fatal."
 
     # Phase 7: Health dashboard
-    _run_phase "Phase 7 (health dashboard)"   "$PYTHON" scripts/health_dashboard.py \
+    _run_phase "Phase 7 (health dashboard)"   "$PYTHON" scripts/scoped_env.py scripts/health_dashboard.py \
         || _err "Phase 7 failed — non-fatal."
 
     _log "──────── CYCLE $CYCLE COMPLETE — published: $PRODUCT ($((PUBLISHED_THIS_WEEK + 1))/${WEEKLY_LIMIT} this week) ────────"

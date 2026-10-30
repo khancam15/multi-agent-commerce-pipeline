@@ -2,18 +2,26 @@ name: Tests
 
 on:
   pull_request:
+  # Docs-only pushes to main don't need the test suite. Pull requests always
+  # run it, so a required check never waits on a skipped run.
   push:
     branches:
       - main
       - master
+    paths-ignore: ['**.md', 'docs/**']
 
 permissions:
   contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   test:
     name: Tests and lint
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1

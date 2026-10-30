@@ -11,10 +11,16 @@ on:
 permissions:
   contents: read
 
+# One run per branch or PR; a newer push cancels the older run
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   secret-scan:
     name: Secret Scan (gitleaks)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
       pull-requests: read  # gitleaks lists pull request commits through the API
@@ -34,6 +40,7 @@ jobs:
   dependency-audit:
     name: Dependency Audit (pip-audit)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
       contents: read
     steps:

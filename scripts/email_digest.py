@@ -6,6 +6,8 @@ Sends a clean daily email with:
   - Brand identity summary from brand_guide.md
   - Pipeline health stats from SQLite
   - Queue status (pending / published counts)
+  - Loop status: paused or running, phases failing now, drafts awaiting
+    approval and the age of the newest database backup
 
 Run:
     python scripts/email_digest.py
@@ -21,6 +23,7 @@ Requires in .env:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import smtplib
@@ -28,6 +31,7 @@ import sys
 from datetime import UTC, datetime, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from html import escape
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -38,6 +42,9 @@ load_dotenv(_ROOT / ".env")
 
 MASTER_FILE      = _ROOT / "outputs" / "master.txt"
 BRAND_GUIDE_FILE = _ROOT / "outputs" / "brand_guide.md"
+PAUSE_FILE       = _ROOT / "PAUSE"
+ALERT_STATE_FILE = _ROOT / "outputs" / "alert_state.json"
+BACKUP_DIR       = _ROOT / "backups"
 
 EMAIL_TO        = os.getenv("EMAIL_TO", "")
 EMAIL_FROM      = os.getenv("EMAIL_FROM", "")
@@ -113,9 +120,52 @@ def _get_stats() -> dict:
     return stats
 
 
+def _loop_status(now: datetime | None = None) -> dict:
+    """Read the loop's own state files, so the digest shows what needs a person."""
+    now = now or _utc_now()
+    try:
+        alert_state = json.loads(ALERT_STATE_FILE.read_text(encoding="utf-8"))
+    except (FileNotFoundError, json.JSONDecodeError):
+        alert_state = {}
+    failing = sorted(f"{label} ({entry.get('failures', 0)}x)"
+                     for label, entry in alert_state.items() if entry.get("failures", 0) > 0)
+
+    backups = sorted(BACKUP_DIR.glob("pipeline-*.db"), key=lambda p: p.stat().st_mtime)
+    backup_age_hours = None
+    if backups:
+        newest = datetime.fromtimestamp(backups[-1].stat().st_mtime, UTC)
+        backup_age_hours = round((now - newest).total_seconds() / 3600, 1)
+
+    try:
+        with get_conn() as conn:
+            drafts = conn.execute("SELECT COUNT(*) FROM listings WHERE status = 'draft'").fetchone()[0]
+    except Exception:
+        drafts = 0
+
+    return {"paused": PAUSE_FILE.exists(), "failing": failing,
+            "drafts": drafts, "backup_age_hours": backup_age_hours}
+
+
+def _status_line(status: dict) -> str:
+    """One plain line for the top of the digest."""
+    parts = ["Loop PAUSED (buyer delivery still runs)" if status["paused"] else "Loop running"]
+    parts.append("failing now: " + ", ".join(status["failing"]) if status["failing"] else "no phase failing")
+    age = status["backup_age_hours"]
+    if age is None:
+        parts.append("NO database backup found")
+    elif age > 36:
+        parts.append(f"last backup {age:.0f}h ago (overdue)")
+    else:
+        parts.append(f"last backup {age:.0f}h ago")
+    if status["drafts"]:
+        parts.append(f"{status['drafts']} draft(s) awaiting ./run.sh approve")
+    return " · ".join(parts)
+
+
 # ── Email builder ─────────────────────────────────────────────────────────────
 
-def _build_email(brand: dict, products: list[dict], stats: dict, sales: dict, weekly_limit: int = 5) -> tuple[str, str]:
+def _build_email(brand: dict, products: list[dict], stats: dict, sales: dict, weekly_limit: int = 5,
+                 status: dict | None = None) -> tuple[str, str]:
     """Return (subject, html_body)."""
     date_str = _utc_now().strftime("%B %d, %Y")
     subject  = f"Commerce Pipeline — Design Brief for {date_str}"
@@ -164,6 +214,15 @@ def _build_email(brand: dict, products: list[dict], stats: dict, sales: dict, we
         f'{label}: <strong>{val}</strong></span>'
     )
 
+    if status is None:
+        status_block = ""
+    else:
+        needs_person = status["paused"] or status["failing"] or status["backup_age_hours"] is None \
+            or status["backup_age_hours"] > 36
+        color = "#c0392b" if needs_person else "#27ae60"
+        status_block = (f'<p style="margin-top:20px;padding:10px 14px;border-left:4px solid {color};'
+                        f'background:#f9f9f9;font-size:14px;">{escape(_status_line(status))}</p>')
+
     html = f"""<!DOCTYPE html>
 <html>
 <body style="font-family:Arial,sans-serif;max-width:640px;margin:0 auto;padding:24px;color:#333;">
@@ -172,6 +231,8 @@ def _build_email(brand: dict, products: list[dict], stats: dict, sales: dict, we
     <h1 style="margin:0;font-size:22px;">{store}</h1>
     <p style="margin:4px 0 0;color:#DAA520;font-size:14px;">{tagline}</p>
   </div>
+
+  {status_block}
 
   <h2 style="color:#2C3E50;margin-top:28px;">Revenue (Last 7 Days)</h2>
   <div style="margin-bottom:8px;">
@@ -202,7 +263,6 @@ def _build_email(brand: dict, products: list[dict], stats: dict, sales: dict, we
   {products_section}
 
   <h2 style="color:#2C3E50;margin-top:32px;">Pipeline Status</h2>
-  <p style="font-size:14px;color:#27ae60;">✦ Fully autonomous — no manual action needed.</p>
   <ul style="font-size:14px;line-height:2;">
     <li>Phase 3 designs 6 mockup images per product (Canva MCP)</li>
     <li>Phase 3B creates the actual template buyers download (Canva MCP)</li>
@@ -242,7 +302,7 @@ def send_digest() -> None:
 
     weekly_limit = int(os.getenv("WEEKLY_PUBLISH_LIMIT", "5"))
     sales        = get_sales_summary(days=7)
-    subject, html_body = _build_email(brand, products, stats, sales, weekly_limit)
+    subject, html_body = _build_email(brand, products, stats, sales, weekly_limit, _loop_status())
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = subject

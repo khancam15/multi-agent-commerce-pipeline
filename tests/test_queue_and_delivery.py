@@ -130,6 +130,15 @@ def test_alert_sent_on_second_failure_and_on_recovery(tmp_path, monkeypatch) -> 
     assert len(sent) == 3 and sent[-1] == "Phase 5 recovered"
 
 
+def test_daily_phase_alerts_on_first_failure(tmp_path, monkeypatch) -> None:
+    sent = []
+    monkeypatch.setattr(alerts, "STATE_FILE", tmp_path / "alert_state.json")
+    monkeypatch.setattr(alerts, "_send", lambda subject, detail: sent.append(subject))
+
+    assert alerts.record("Database backup", False, "disk full")
+    assert sent == ["Database backup has failed 1 times in a row"]
+
+
 def test_backup_copies_database_and_prunes_old_files(tmp_path) -> None:
     import os
     import time

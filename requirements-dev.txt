@@ -24,4 +24,4 @@ bandit>=1.7.8                    # Security vulnerability scanner
 
 # ── HTTP Testing ──────────────────────────────────────────────────────────────
 responses>=0.25.0                # Mock requests library responses
-httpx>=0.27.0                    # Modern async HTTP client (for future async work)
+httpx>=0.28.1                    # Modern async HTTP client (for future async work)

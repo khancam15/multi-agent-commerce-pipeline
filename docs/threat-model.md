@@ -36,7 +36,7 @@ no browser automation and no shell execution driven by model output.
 | Model-chosen product name used as a path | `loop.sh` skips product names containing `/`, `\` or `..`; storefront paths use a slug of `[a-z0-9-]` only. |
 | Secrets executed or leaked through `.env` | `.env` is read with python-dotenv, never sourced as shell. gitleaks runs in CI and as a pre-commit hook. The storefront is built from SQLite fields that hold no secrets and is pushed from its own repo in `site/`. |
 | Runaway retries against APIs | systemd stops on configuration errors (exit 78) and gives up after 5 crashes in 10 minutes. |
-| Silent failure | Alert email after a phase fails twice in a row, daily health dashboard and digest. |
+| Silent failure | Alert email after a phase fails twice in a row (once for daily phases such as the backup), daily health dashboard, and a status line at the top of the digest. |
 | Data loss | Daily SQLite backups to `backups/` (14 days kept). |
 | Vulnerable dependencies | pip-audit in CI; core AI packages pinned. |
 

@@ -2,7 +2,8 @@
 alerts.py — Failure alerts for the autonomous loop
 ───────────────────────────────────────────────────
 loop.sh reports every phase result here. When a phase fails twice in a
-row, an alert email goes to EMAIL_TO, then at most once every
+row (once, for the phases that run only once a day), an alert email goes
+to EMAIL_TO, then at most once every
 ALERT_REPEAT_HOURS (default 12) while it keeps failing. A success resets
 the count and sends a short "recovered" note if an alert had gone out.
 
@@ -30,6 +31,9 @@ from mailer import is_configured, send_email
 _ROOT      = Path(__file__).resolve().parent.parent
 STATE_FILE = _ROOT / "outputs" / "alert_state.json"
 FAIL_THRESHOLD = 2
+# These run once a day, so waiting for a second failure would hide the
+# problem for a day. A missed backup matters most.
+DAILY_PHASES = {"Sales sync", "Email digest", "Database backup"}
 
 
 def _load() -> dict:
@@ -77,7 +81,8 @@ def record(label: str, ok: bool, detail: str = "", now: datetime | None = None) 
     entry["failures"] = entry.get("failures", 0) + 1
     last = entry.get("alerted_at")
     due  = not last or now - datetime.fromisoformat(last) >= repeat
-    if entry["failures"] >= FAIL_THRESHOLD and due:
+    threshold = 1 if label in DAILY_PHASES else FAIL_THRESHOLD
+    if entry["failures"] >= threshold and due:
         _send(f"{label} has failed {entry['failures']} times in a row", detail)
         entry["alerted_at"] = now.isoformat()
         sent = True

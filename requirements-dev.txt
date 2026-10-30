@@ -16,7 +16,7 @@ ruff>=0.3.0                      # Fast linter (replaces flake8, isort, etc.)
 mypy>=1.9.0                      # Static type checking
 
 # ── Type Stubs ────────────────────────────────────────────────────────────────
-types-requests>=2.31.0           # Type stubs for requests library
+types-requests>=2.33.0.20261006           # Type stubs for requests library
 types-Pillow>=10.2.0             # Type stubs for PIL/Pillow
 
 # ── Security Scanning ─────────────────────────────────────────────────────────
